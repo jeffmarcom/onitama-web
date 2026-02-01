@@ -18,6 +18,9 @@ RUN npm run build
 # Production stage
 FROM node:20-alpine
 
+# For HEALTHCHECK
+RUN apk add --no-cache wget
+
 WORKDIR /app
 
 # Copy package files
@@ -38,6 +41,10 @@ EXPOSE 3000
 
 # Set environment to production
 ENV NODE_ENV=production
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -q -O - http://localhost:3000/api/health || exit 1
 
 # Start server
 CMD ["node", "server/index.js"]
