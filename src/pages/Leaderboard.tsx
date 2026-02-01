@@ -1,13 +1,21 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
+interface LeaderboardEntry {
+  username: string
+  wins: number
+  losses: number
+  gamesPlayed: number
+  winRate: number
+}
+
 interface LeaderboardProps {
   token: string | null
   onLogout: () => void
 }
 
 function Leaderboard({ token, onLogout }: LeaderboardProps) {
-  const [leaderboard, setLeaderboard] = useState<any[]>([])
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -71,7 +79,7 @@ function Leaderboard({ token, onLogout }: LeaderboardProps) {
                     </td>
                   </tr>
                 ) : (
-                  leaderboard.map((player, index) => (
+                  leaderboard.map((player: LeaderboardEntry, index: number) => (
                     <tr key={player.username}>
                       <td className="rank">#{index + 1}</td>
                       <td>{player.username}</td>
