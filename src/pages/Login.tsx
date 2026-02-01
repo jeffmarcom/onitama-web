@@ -1,7 +1,12 @@
 import { useState } from 'react'
 
+export interface User {
+  username: string
+  // add other user fields as needed
+}
+
 interface LoginProps {
-  onLogin: (token: string, user: any) => void
+  onLogin: (token: string, user: User) => void
 }
 
 function Login({ onLogin }: LoginProps) {
@@ -32,8 +37,9 @@ function Login({ onLogin }: LoginProps) {
       const data = await response.json()
 
       onLogin(data.token, data.user)
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred')
+    } finally {
     } finally {
       setLoading(false)
     }
