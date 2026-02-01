@@ -24,11 +24,12 @@ function Login({ onLogin }: LoginProps) {
         body: JSON.stringify({ username, password })
       })
 
-      const data = await response.json()
-
       if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
         throw new Error(data.error || 'Authentication failed')
       }
+
+      const data = await response.json()
 
       onLogin(data.token, data.user)
     } catch (err: any) {
@@ -45,8 +46,9 @@ function Login({ onLogin }: LoginProps) {
         {error && <div className="error">{error}</div>}
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label>Username</label>
+            <label htmlFor="username-input">Username</label>
             <input
+              id="username-input"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -55,8 +57,9 @@ function Login({ onLogin }: LoginProps) {
             />
           </div>
           <div className="form-group">
-            <label>Password</label>
+            <label htmlFor="password-input">Password</label>
             <input
+              id="password-input"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
