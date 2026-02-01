@@ -1,3 +1,4 @@
+/// <reference types="react" />
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { CARD_MOVES } from '../utils/cards'
@@ -365,7 +366,7 @@ function Game({ token, user, onLogout }: GameProps) {
           <Link to="/game">Game</Link>
           <Link to="/how-to-play">How to Play</Link>
           <Link to="/leaderboard">Leaderboard</Link>
-          <button onClick={onLogout}>Logout</button>
+          <button type="button" onClick={onLogout}>Logout</button>
         </div>
       </div>
 
@@ -377,9 +378,9 @@ function Game({ token, user, onLogout }: GameProps) {
             <h2>Welcome, {user?.username}!</h2>
             <p style={{ margin: '20px 0', color: '#888' }}>Start a new game to play</p>
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
-              <button className="btn" onClick={() => startNewGame('easy')}>Easy</button>
-              <button className="btn" onClick={() => startNewGame('medium')}>Medium</button>
-              <button className="btn" onClick={() => startNewGame('hard')}>Hard</button>
+              <button type="button" className="btn" onClick={() => startNewGame('easy')}>Easy</button>
+              <button type="button" className="btn" onClick={() => startNewGame('medium')}>Medium</button>
+              <button type="button" className="btn" onClick={() => startNewGame('hard')}>Hard</button>
             </div>
           </div>
         ) : (
@@ -407,11 +408,11 @@ function Game({ token, user, onLogout }: GameProps) {
                 </div>
               </div>
               <div className="game-controls-compact">
-                <button className="btn-small" onClick={() => startNewGame('medium')}>
+                <button type="button" className="btn-small" onClick={() => startNewGame('medium')}>
                   New Game
                 </button>
                 {!gameState.winner && (
-                  <button className="btn-small btn-secondary" onClick={handleResign}>
+                  <button type="button" className="btn-small btn-secondary" onClick={handleResign}>
                     Resign
                   </button>
                 )}
