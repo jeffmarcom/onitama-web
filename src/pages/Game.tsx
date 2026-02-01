@@ -1,5 +1,3 @@
-/// <reference types="react" />
-/// <reference types="vite/client" />
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { CARD_MOVES } from '../utils/cards'

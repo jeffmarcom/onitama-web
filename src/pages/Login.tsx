@@ -40,7 +40,6 @@ function Login({ onLogin }: LoginProps) {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred')
     } finally {
-    } finally {
       setLoading(false)
     }
   }
