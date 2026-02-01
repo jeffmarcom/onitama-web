@@ -22,6 +22,7 @@ dev: ## Run development environment locally with Docker
 	docker run -d \
 		--name $(CONTAINER_NAME) \
 		-p $(PORT):3000 \
+		-e JWT_SECRET=dev-local-secret-change-in-production \
 		-v $(PWD)/data:/app/data \
 		$(IMAGE_NAME)
 	@echo "Onitama is running at http://localhost:$(PORT)"

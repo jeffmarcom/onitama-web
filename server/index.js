@@ -7,6 +7,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { v4 as uuidv4 } from 'uuid';
+import { initializeGame, isValidMove, makeMove, getAIMove } from './gameEngine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let server;
@@ -224,6 +225,281 @@ app.get('/api/leaderboard', async (req, res) => {
     res.json({ leaderboard });
   } catch (error) {
     console.error('Leaderboard error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Game routes
+app.post('/api/game/new', authenticateToken, async (req, res) => {
+  try {
+    const { difficulty = 'medium' } = req.body;
+    const username = req.user.username;
+
+    // Validate difficulty
+    if (!['easy', 'medium', 'hard'].includes(difficulty)) {
+      return res.status(400).json({ error: 'Invalid difficulty level' });
+    }
+
+    // Initialize new game
+    const gameState = initializeGame();
+    const gameId = uuidv4();
+
+    // Create game record
+    const game = {
+      id: gameId,
+      username,
+      difficulty,
+      state: gameState,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    // Save game
+    let games = await readJSON(GAMES_FILE, []);
+    // Ensure games is an array (migrate from object format if needed)
+    if (!Array.isArray(games)) {
+      games = [];
+    }
+    games.push(game);
+    await writeJSON(GAMES_FILE, games);
+
+    // Add game ID to state for client convenience
+    const stateWithId = { ...gameState, id: gameId };
+    res.status(201).json({ gameId, gameState: stateWithId });
+  } catch (error) {
+    console.error('Create game error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/game/:id', authenticateToken, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const username = req.user.username;
+
+    const games = await readJSON(GAMES_FILE, []);
+    const game = games.find(g => g.id === gameId);
+
+    if (!game) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    // Verify game belongs to user
+    if (game.username !== username) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Add game ID to state for client convenience
+    const stateWithId = { ...game.state, id: game.id };
+    res.json({ gameState: stateWithId });
+  } catch (error) {
+    console.error('Get game error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/game/:id/move', authenticateToken, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const username = req.user.username;
+    const { pieceIndex, toRow, toCol, cardName } = req.body;
+
+    // Validate input
+    if (pieceIndex === undefined || toRow === undefined || toCol === undefined || !cardName) {
+      return res.status(400).json({ error: 'Missing move parameters' });
+    }
+
+    const games = await readJSON(GAMES_FILE, []);
+    const gameIndex = games.findIndex(g => g.id === gameId);
+
+    if (gameIndex === -1) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const game = games[gameIndex];
+
+    // Verify game belongs to user
+    if (game.username !== username) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Check if game is over
+    if (game.state.winner) {
+      return res.status(400).json({ error: 'Game is already over' });
+    }
+
+    // Check if it's player's turn
+    if (game.state.currentPlayer !== 1) {
+      return res.status(400).json({ error: 'Not your turn' });
+    }
+
+    // Validate and make player move
+    if (!isValidMove(game.state, 1, pieceIndex, toRow, toCol, cardName)) {
+      return res.status(400).json({ error: 'Invalid move' });
+    }
+
+    game.state = makeMove(game.state, 1, pieceIndex, toRow, toCol, cardName);
+    game.updatedAt = new Date().toISOString();
+
+    // Check if player won with this move
+    let playerWon = false;
+    if (game.state.winner === 1) {
+      playerWon = true;
+      const stats = await readJSON(STATS_FILE, {});
+      if (!stats[username]) {
+        stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
+      }
+      stats[username].gamesPlayed++;
+      stats[username].wins++;
+      await writeJSON(STATS_FILE, stats);
+    }
+
+    // Save player's move
+    games[gameIndex] = game;
+    await writeJSON(GAMES_FILE, games);
+
+    // Send response with player's move immediately
+    const stateWithId = { ...game.state, id: game.id };
+    res.json({ gameState: stateWithId, gameEnded: playerWon });
+
+    // If game not over and it's AI's turn, process AI move asynchronously
+    if (!game.state.winner && game.state.currentPlayer === 2) {
+      // Process AI move in background after delay (with optimistic concurrency)
+      (async () => {
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+
+          // Re-read game state to ensure we have latest
+          const gamesAfterDelay = await readJSON(GAMES_FILE, []);
+          const gameAfterDelay = gamesAfterDelay.find(g => g.id === gameId);
+          if (!gameAfterDelay || gameAfterDelay.state.winner) return;
+
+          // Version for optimistic concurrency: compare before write
+          const readUpdatedAt = gameAfterDelay.updatedAt;
+
+          const aiMove = getAIMove(gameAfterDelay.state, gameAfterDelay.difficulty);
+          if (!aiMove) return;
+
+          gameAfterDelay.state = makeMove(
+            gameAfterDelay.state,
+            2,
+            aiMove.pieceIndex,
+            aiMove.toRow,
+            aiMove.toCol,
+            aiMove.cardName
+          );
+          gameAfterDelay.updatedAt = new Date().toISOString();
+
+          // Check if AI won (for stats; will persist only if write succeeds)
+          const aiWon = gameAfterDelay.state.winner === 2;
+
+          // Optimistic concurrency: only write if stored game version matches what we read
+          const finalGames = await readJSON(GAMES_FILE, []);
+          const finalGameIndex = finalGames.findIndex(g => g.id === gameId);
+          if (finalGameIndex === -1) return;
+
+          const currentGame = finalGames[finalGameIndex];
+          if (currentGame.updatedAt !== readUpdatedAt) {
+            // Conflict: someone else updated the game; apply AI move to latest state instead
+            console.log('AI move: conflict detected, applying move to latest state', gameId);
+            if (currentGame.state.winner) return; // Game ended, skip AI move
+            const aiMoveLatest = getAIMove(currentGame.state, currentGame.difficulty);
+            if (!aiMoveLatest) return;
+            currentGame.state = makeMove(
+              currentGame.state,
+              2,
+              aiMoveLatest.pieceIndex,
+              aiMoveLatest.toRow,
+              aiMoveLatest.toCol,
+              aiMoveLatest.cardName
+            );
+            currentGame.updatedAt = new Date().toISOString();
+            finalGames[finalGameIndex] = currentGame;
+
+            if (currentGame.state.winner === 2) {
+              const stats = await readJSON(STATS_FILE, {});
+              if (!stats[username]) {
+                stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
+              }
+              stats[username].gamesPlayed++;
+              stats[username].losses++;
+              await writeJSON(STATS_FILE, stats);
+            }
+          } else {
+            // No conflict: write our computed state; replace only the matching game by index
+            finalGames[finalGameIndex] = gameAfterDelay;
+            if (aiWon) {
+              const stats = await readJSON(STATS_FILE, {});
+              if (!stats[username]) {
+                stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
+              }
+              stats[username].gamesPlayed++;
+              stats[username].losses++;
+              await writeJSON(STATS_FILE, stats);
+            }
+          }
+
+          await writeJSON(GAMES_FILE, finalGames);
+        } catch (error) {
+          console.error('AI move error:', error);
+        }
+      })();
+    }
+  } catch (error) {
+    console.error('Move error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/game/:id/resign', authenticateToken, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const username = req.user.username;
+
+    const games = await readJSON(GAMES_FILE, []);
+    const gameIndex = games.findIndex(g => g.id === gameId);
+
+    if (gameIndex === -1) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const game = games[gameIndex];
+
+    // Verify game belongs to user
+    if (game.username !== username) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Check if game is already over
+    if (game.state.winner) {
+      return res.status(400).json({ error: 'Game is already over' });
+    }
+
+    // Set AI as winner
+    game.state.winner = 2;
+    game.state.winCondition = 'Resignation';
+    game.updatedAt = new Date().toISOString();
+
+    // Update stats
+    const stats = await readJSON(STATS_FILE, {});
+    if (!stats[username]) {
+      stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
+    }
+
+    stats[username].gamesPlayed++;
+    stats[username].losses++;
+
+    await writeJSON(STATS_FILE, stats);
+
+    // Save updated game
+    games[gameIndex] = game;
+    await writeJSON(GAMES_FILE, games);
+
+    // Add game ID to state for client convenience
+    const stateWithId = { ...game.state, id: game.id };
+    res.json({ gameState: stateWithId });
+  } catch (error) {
+    console.error('Resign error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
