@@ -4,3 +4,5 @@ data/*.json
 .env
 .DS_Store
 *.log
+.idea/
+coverage/

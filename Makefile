@@ -1,5 +1,7 @@
 .PHONY: help dev build clean logs prod-deploy
 
+.DEFAULT_GOAL := help
+
 IMAGE_NAME = onitama-web
 CONTAINER_NAME = onitama-web-container
 PORT = 3000
