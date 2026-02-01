@@ -156,12 +156,14 @@ Cloud Run provides a free public URL without needing a custom domain:
 1. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install)
 
 2. Authenticate and set up your project:
+
 ```bash
 gcloud auth login
-gcloud config set project $PROJECT
+gcloud config set project $GCP_PROJECT
 ```
 
 3. Deploy with a single command:
+
 ```bash
 make deploy
 ```
