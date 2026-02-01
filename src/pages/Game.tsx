@@ -47,7 +47,6 @@ function Game({ token, user, onLogout }: GameProps) {
   const [selectedPiece, setSelectedPiece] = useState<number | null>(null)
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [validMoves, setValidMoves] = useState<ValidMove[]>([])
-  const [hoveredCard, setHoveredCard] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [pollingInterval, setPollingInterval] = useState<ReturnType<typeof setInterval> | null>(null)
