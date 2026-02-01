@@ -3,21 +3,50 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { CARD_MOVES } from '../utils/cards'
 
+export interface Piece {
+  row: number
+  col: number
+  player: 1 | 2
+  type: 'master' | 'student'
+}
+
+export interface ValidMove {
+  row: number
+  col: number
+  cardName: string
+}
+
+export interface GameState {
+  id: string
+  pieces: { 1: Piece[]; 2: Piece[] }
+  board: (Piece | null)[][]
+  player1Cards: string[]
+  player2Cards: string[]
+  sideCard: string
+  currentPlayer: 1 | 2
+  winner: 1 | 2 | null
+  winCondition?: string
+}
+
+export interface User {
+  username: string
+}
+
 interface GameProps {
   token: string
-  user: any
+  user: User | null
   onLogout: () => void
 }
 
 function Game({ token, user, onLogout }: GameProps) {
-  const [gameState, setGameState] = useState<any>(null)
+  const [gameState, setGameState] = useState<GameState | null>(null)
   const [selectedPiece, setSelectedPiece] = useState<number | null>(null)
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
-  const [validMoves, setValidMoves] = useState<any[]>([])
+  const [validMoves, setValidMoves] = useState<ValidMove[]>([])
   const [hoveredCard, setHoveredCard] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [pollingInterval, setPollingInterval] = useState<any>(null)
+  const [pollingInterval, setPollingInterval] = useState<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     return () => {
@@ -49,8 +78,8 @@ function Game({ token, user, onLogout }: GameProps) {
       // Start polling for AI moves
       const interval = setInterval(() => pollGameState(data.gameId), 1000)
       setPollingInterval(interval)
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
@@ -134,7 +163,7 @@ function Game({ token, user, onLogout }: GameProps) {
     if (!piece) return
 
     const moves = CARD_MOVES[cardName] || []
-    const valid: any[] = []
+    const valid: ValidMove[] = []
 
     moves.forEach(([dRow, dCol]: [number, number]) => {
       // Player 1 at bottom (row 4) moving toward opponent at top (row 0)
@@ -173,7 +202,7 @@ function Game({ token, user, onLogout }: GameProps) {
     console.log('Calculating moves for piece', pieceIndex, 'at position', piece.row, piece.col)
     console.log('Available cards:', gameState.player1Cards)
 
-    const allValid: any[] = []
+    const allValid: ValidMove[] = []
 
     // Calculate moves for all available cards
     gameState.player1Cards.forEach((cardName: string) => {
@@ -248,8 +277,8 @@ function Game({ token, user, onLogout }: GameProps) {
       if (data.gameEnded && pollingInterval) {
         clearInterval(pollingInterval)
       }
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
@@ -267,8 +296,8 @@ function Game({ token, user, onLogout }: GameProps) {
       const data = await response.json()
       setGameState(data.gameState)
       if (pollingInterval) clearInterval(pollingInterval)
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -296,7 +325,16 @@ function Game({ token, user, onLogout }: GameProps) {
     return (
       <div 
         className={`card ${isSelectable ? 'selectable' : ''} ${isSelected ? 'selected' : ''}`}
+        role={isSelectable ? 'button' : undefined}
+        tabIndex={isSelectable ? 0 : undefined}
+        aria-selected={isSelectable ? isSelected : undefined}
         onClick={isSelectable ? () => handleCardClick(cardName) : undefined}
+        onKeyDown={isSelectable ? (e: React.KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            handleCardClick(cardName)
+          }
+        } : undefined}
       >
         <div className="card-name">{cardName}</div>
         <div className="card-grid">{grid}</div>
@@ -330,7 +368,16 @@ function Game({ token, user, onLogout }: GameProps) {
           <div 
             key={`${row}-${col}`} 
             className={cellClass}
+            role="button"
+            tabIndex={0}
+            aria-selected={isSelectedPiece}
             onClick={() => handleCellClick(row, col)}
+            onKeyDown={(e: React.KeyboardEvent) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                handleCellClick(row, col)
+              }
+            }}
           >
             {cellPiece && (
               <div 
@@ -341,7 +388,7 @@ function Game({ token, user, onLogout }: GameProps) {
                   if (cellPiece.player === 1) {
                     e.stopPropagation()
                     const pieceIndex = gameState.pieces[1].findIndex(
-                      (p: any) => p.row === row && p.col === col
+                      (p: Piece) => p.row === row && p.col === col
                     )
                     console.log('Clicked piece:', pieceIndex, 'at', row, col)
                     handlePieceClick(pieceIndex)
