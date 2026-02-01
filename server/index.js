@@ -1,4 +1,6 @@
 import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,10 +10,11 @@ import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { v4 as uuidv4 } from 'uuid';
 import { initializeGame, isValidMove, makeMove, getAIMove } from './gameEngine.js';
+import { lobby } from './lobby.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-let server;
 const app = express();
+const httpServer = createServer(app);
 const PORT = process.env.PORT || 3000;
 
 // JWT secret - no default in production; dev-only fallback with warning
@@ -86,10 +89,214 @@ app.use(
 
 app.use(express.json());
 
+// Initialize Socket.IO with CORS
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  // Force WebSocket-only transport for Cloud Run compatibility
+  transports: ['websocket'],
+  // Increase timeout for Cloud Run (max 60 minutes)
+  pingTimeout: 60000,
+  pingInterval: 25000
+});
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Too many attempts, please try again later' },
+});
+
+// Socket.IO authentication middleware
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  
+  if (!token) {
+    return next(new Error('Authentication required'));
+  }
+  
+  jwt.verify(token, JWT_SECRET_TO_USE, (err, user) => {
+    if (err) {
+      return next(new Error('Invalid token'));
+    }
+    socket.user = user;
+    next();
+  });
+});
+
+// Socket.IO connection handler
+io.on('connection', (socket) => {
+  console.log(`User connected: ${socket.user.username} (${socket.id})`);
+  
+  // Join lobby queue
+  socket.on('lobby:join', () => {
+    const match = lobby.joinQueue(socket.id, socket.user.username);
+    
+    if (match) {
+      // Match found! Create a new PvP game
+      const gameState = initializeGame();
+      const gameId = uuidv4();
+      
+      const game = {
+        id: gameId,
+        gameType: 'pvp',
+        player1Username: match.player1Username,
+        player2Username: match.player2Username,
+        state: gameState,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      
+      // Save game
+      (async () => {
+        try {
+          const games = await readJSON(GAMES_FILE, []);
+          games.push(game);
+          await writeJSON(GAMES_FILE, games);
+        } catch (error) {
+          console.error('Error saving PvP game:', error);
+        }
+      })();
+      
+      // Register game in lobby
+      lobby.registerGame(
+        gameId,
+        match.player1SocketId,
+        match.player2SocketId,
+        match.player1Username,
+        match.player2Username
+      );
+      
+      // Notify both players
+      io.to(match.player1SocketId).emit('lobby:matched', {
+        gameId,
+        playerNumber: 1,
+        opponentUsername: match.player2Username,
+        gameState: { ...gameState, id: gameId }
+      });
+      
+      io.to(match.player2SocketId).emit('lobby:matched', {
+        gameId,
+        playerNumber: 2,
+        opponentUsername: match.player1Username,
+        gameState: { ...gameState, id: gameId }
+      });
+    } else {
+      // Added to queue, waiting for opponent
+      socket.emit('lobby:waiting');
+    }
+  });
+  
+  // Leave lobby queue
+  socket.on('lobby:leave', () => {
+    const removed = lobby.leaveQueue(socket.id);
+    if (removed) {
+      socket.emit('lobby:left');
+    }
+  });
+  
+  // Make a move in PvP game
+  socket.on('game:move', async ({ gameId, pieceIndex, toRow, toCol, cardName }) => {
+    try {
+      const gameInfo = lobby.getGame(gameId);
+      if (!gameInfo) {
+        return socket.emit('game:error', { error: 'Game not found' });
+      }
+      
+      // Determine which player is making the move
+      let playerNumber;
+      if (gameInfo.player1SocketId === socket.id) {
+        playerNumber = 1;
+      } else if (gameInfo.player2SocketId === socket.id) {
+        playerNumber = 2;
+      } else {
+        return socket.emit('game:error', { error: 'Not a player in this game' });
+      }
+      
+      // Get current game state from storage
+      const games = await readJSON(GAMES_FILE, []);
+      const gameIndex = games.findIndex(g => g.id === gameId);
+      
+      if (gameIndex === -1) {
+        return socket.emit('game:error', { error: 'Game not found in storage' });
+      }
+      
+      const game = games[gameIndex];
+      
+      // Check if game is over
+      if (game.state.winner) {
+        return socket.emit('game:error', { error: 'Game is already over' });
+      }
+      
+      // Check if it's player's turn
+      if (game.state.currentPlayer !== playerNumber) {
+        return socket.emit('game:error', { error: 'Not your turn' });
+      }
+      
+      // Validate and make move
+      if (!isValidMove(game.state, playerNumber, pieceIndex, toRow, toCol, cardName)) {
+        return socket.emit('game:error', { error: 'Invalid move' });
+      }
+      
+      game.state = makeMove(game.state, playerNumber, pieceIndex, toRow, toCol, cardName);
+      game.updatedAt = new Date().toISOString();
+      
+      // Check if player won
+      if (game.state.winner) {
+        const winnerUsername = game.state.winner === 1 ? game.player1Username : game.player2Username;
+        const loserUsername = game.state.winner === 1 ? game.player2Username : game.player1Username;
+        
+        // Update stats
+        const stats = await readJSON(STATS_FILE, {});
+        if (!stats[winnerUsername]) {
+          stats[winnerUsername] = { wins: 0, losses: 0, gamesPlayed: 0 };
+        }
+        if (!stats[loserUsername]) {
+          stats[loserUsername] = { wins: 0, losses: 0, gamesPlayed: 0 };
+        }
+        
+        stats[winnerUsername].wins++;
+        stats[winnerUsername].gamesPlayed++;
+        stats[loserUsername].losses++;
+        stats[loserUsername].gamesPlayed++;
+        
+        await writeJSON(STATS_FILE, stats);
+        
+        // Remove game from active games
+        lobby.removeGame(gameId);
+      }
+      
+      // Save updated game state
+      games[gameIndex] = game;
+      await writeJSON(GAMES_FILE, games);
+      
+      // Broadcast updated state to both players
+      const stateWithId = { ...game.state, id: gameId };
+      io.to(gameInfo.player1SocketId).emit('game:state', { gameState: stateWithId });
+      io.to(gameInfo.player2SocketId).emit('game:state', { gameState: stateWithId });
+      
+    } catch (error) {
+      console.error('Move error:', error);
+      socket.emit('game:error', { error: 'Internal server error' });
+    }
+  });
+  
+  // Handle disconnect
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.user.username} (${socket.id})`);
+    
+    const disconnectInfo = lobby.handleDisconnect(socket.id);
+    
+    if (disconnectInfo && disconnectInfo.opponentSocketId) {
+      // Notify opponent of disconnect
+      io.to(disconnectInfo.opponentSocketId).emit('game:opponent_disconnected', {
+        gameId: disconnectInfo.gameId,
+        username: disconnectInfo.disconnectedUsername
+      });
+    }
+  });
 });
 
 // Health check route for Docker HEALTHCHECK and load balancers
@@ -244,9 +451,10 @@ app.post('/api/game/new', authenticateToken, async (req, res) => {
     const gameState = initializeGame();
     const gameId = uuidv4();
 
-    // Create game record
+    // Create game record (AI game)
     const game = {
       id: gameId,
+      gameType: 'ai',
       username,
       difficulty,
       state: gameState,
@@ -526,13 +734,14 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-server = app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+  console.log('Socket.IO initialized for real-time communication');
 });
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
+  httpServer.close(() => {
     console.log('Server closed');
     process.exit(0);
   });

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { CARD_MOVES } from '../utils/cards'
+import { initializeSocket, getSocket, makeMove as socketMakeMove } from '../utils/socket'
 
 const DEBUG = import.meta.env.DEV
 const debug = (...args: unknown[]): void => { if (DEBUG) console.log(...args) }
@@ -41,19 +42,62 @@ interface GameProps {
 }
 
 function Game({ token, user, onLogout }: GameProps) {
-  const [gameState, setGameState] = useState<GameState | null>(null)
+  const location = useLocation()
+  const pvpState = location.state as { pvp?: boolean; gameId?: string; playerNumber?: 1 | 2; opponentUsername?: string; gameState?: GameState } | null
+  
+  const [gameState, setGameState] = useState<GameState | null>(pvpState?.gameState || null)
   const [selectedPiece, setSelectedPiece] = useState<number | null>(null)
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [validMoves, setValidMoves] = useState<ValidMove[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [pollingInterval, setPollingInterval] = useState<ReturnType<typeof setInterval> | null>(null)
+  
+  // PvP specific state
+  const [isPvP, setIsPvP] = useState(pvpState?.pvp || false)
+  const [playerNumber, setPlayerNumber] = useState<1 | 2 | null>(pvpState?.playerNumber || null)
+  const [opponentUsername, setOpponentUsername] = useState<string>(pvpState?.opponentUsername || '')
+  const [opponentDisconnected, setOpponentDisconnected] = useState(false)
 
   useEffect(() => {
     return () => {
       if (pollingInterval) clearInterval(pollingInterval)
     }
   }, [pollingInterval])
+
+  // Socket effect for PvP games
+  useEffect(() => {
+    if (!isPvP || !token) return
+
+    const socket = initializeSocket(token)
+
+    // Listen for game state updates
+    socket.on('game:state', ({ gameState: newState }) => {
+      setGameState(newState)
+      // Clear selection after move
+      setSelectedPiece(null)
+      setSelectedCard(null)
+      setValidMoves([])
+    })
+
+    // Listen for errors
+    socket.on('game:error', ({ error: errorMsg }) => {
+      setError(errorMsg)
+      setLoading(false)
+    })
+
+    // Listen for opponent disconnect
+    socket.on('game:opponent_disconnected', ({ username }) => {
+      setOpponentDisconnected(true)
+      setError(`${username} has disconnected. You win by default.`)
+    })
+
+    return () => {
+      socket.off('game:state')
+      socket.off('game:error')
+      socket.off('game:opponent_disconnected')
+    }
+  }, [isPvP, token])
 
   const startNewGame = async (difficulty: string = 'medium') => {
     setLoading(true)
@@ -104,7 +148,8 @@ function Game({ token, user, onLogout }: GameProps) {
     debug('handlePieceClick called with:', pieceIndex)
     debug('gameState:', gameState?.currentPlayer, 'winner:', gameState?.winner)
 
-    if (!gameState || gameState.winner || gameState.currentPlayer !== 1) {
+    const myPlayerNumber = isPvP ? playerNumber : 1
+    if (!gameState || gameState.winner || gameState.currentPlayer !== myPlayerNumber) {
       debug('Cannot select piece - conditions not met')
       return
     }
@@ -132,7 +177,8 @@ function Game({ token, user, onLogout }: GameProps) {
   const handleCardClick = (cardName: string) => {
     debug('handleCardClick called with:', cardName)
 
-    if (!gameState || gameState.winner || gameState.currentPlayer !== 1) {
+    const myPlayerNumber = isPvP ? playerNumber : 1
+    if (!gameState || gameState.winner || gameState.currentPlayer !== myPlayerNumber) {
       debug('Cannot select card - conditions not met')
       return
     }
@@ -160,7 +206,8 @@ function Game({ token, user, onLogout }: GameProps) {
   }
 
   const calculateValidMoves = (pieceIndex: number, cardName: string) => {
-    const piece = gameState.pieces[1][pieceIndex]
+    const myPlayerNumber = isPvP ? (playerNumber || 1) : 1
+    const piece = gameState.pieces[myPlayerNumber][pieceIndex]
     if (!piece) return
 
     const moves = CARD_MOVES[cardName] || []
@@ -168,11 +215,17 @@ function Game({ token, user, onLogout }: GameProps) {
 
     moves.forEach(([dRow, dCol]: [number, number]) => {
       // Player 1 at bottom (row 4) moving toward opponent at top (row 0)
-      // Need to negate row: positive card values mean "forward toward opponent"
-      // which means decreasing row numbers for player 1
-      // Column: positive = right, negative = left (same for all players)
-      const newRow = piece.row - dRow
-      const newCol = piece.col + dCol
+      // Player 2 at top (row 0) moving toward opponent at bottom (row 4)
+      // Card moves: positive dRow = forward, negative dRow = backward
+      // positive dCol = right, negative dCol = left (from player's perspective)
+      let newRow, newCol
+      if (myPlayerNumber === 1) {
+        newRow = piece.row - dRow  // Forward = decreasing row
+        newCol = piece.col + dCol  // Right = increasing col
+      } else {
+        newRow = piece.row + dRow  // Forward = increasing row for player 2
+        newCol = piece.col - dCol  // Right is flipped for player 2
+      }
 
       debug(`Card ${cardName}, piece at [${piece.row},${piece.col}], move [${dRow},${dCol}] -> [${newRow},${newCol}]`)
 
@@ -184,7 +237,7 @@ function Game({ token, user, onLogout }: GameProps) {
 
       // Check if destination has own piece
       const destPiece = gameState.board[newRow][newCol]
-      if (destPiece && destPiece.player === 1) {
+      if (destPiece && destPiece.player === myPlayerNumber) {
         debug('  Own piece')
         return
       }
@@ -197,23 +250,31 @@ function Game({ token, user, onLogout }: GameProps) {
   }
 
   const calculateAllValidMoves = (pieceIndex: number) => {
-    const piece = gameState.pieces[1][pieceIndex]
+    const myPlayerNumber = isPvP ? (playerNumber || 1) : 1
+    const piece = gameState.pieces[myPlayerNumber][pieceIndex]
     if (!piece) return
 
+    const myCards = myPlayerNumber === 1 ? gameState.player1Cards : gameState.player2Cards
     debug('Calculating moves for piece', pieceIndex, 'at position', piece.row, piece.col)
-    debug('Available cards:', gameState.player1Cards)
+    debug('Available cards:', myCards)
 
     const allValid: ValidMove[] = []
 
     // Calculate moves for all available cards
-    gameState.player1Cards.forEach((cardName: string) => {
+    myCards.forEach((cardName: string) => {
       const moves = CARD_MOVES[cardName] || []
       debug(`Card ${cardName} moves:`, moves)
 
       moves.forEach(([dRow, dCol]: [number, number]) => {
-        // Negate row (toward opponent), keep col as-is (right = positive)
-        const newRow = piece.row - dRow
-        const newCol = piece.col + dCol
+        // Calculate new position based on player perspective
+        let newRow, newCol
+        if (myPlayerNumber === 1) {
+          newRow = piece.row - dRow  // Forward = decreasing row
+          newCol = piece.col + dCol  // Right = increasing col
+        } else {
+          newRow = piece.row + dRow  // Forward = increasing row for player 2
+          newCol = piece.col - dCol  // Right is flipped for player 2
+        }
         debug(`  Move [${dRow},${dCol}] -> [${newRow},${newCol}]`)
 
         // Check bounds
@@ -224,7 +285,7 @@ function Game({ token, user, onLogout }: GameProps) {
 
         // Check if destination has own piece
         const destPiece = gameState.board[newRow][newCol]
-        if (destPiece && destPiece.player === 1) {
+        if (destPiece && destPiece.player === myPlayerNumber) {
           debug('    Rejected: own piece')
           return
         }
@@ -252,35 +313,48 @@ function Game({ token, user, onLogout }: GameProps) {
     if (!cardToUse) return
 
     setLoading(true)
+    setError('')
+    
     try {
-      const response = await fetch(`/api/game/${gameState.id}/move`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          pieceIndex: selectedPiece,
-          toRow: row,
-          toCol: col,
-          cardName: cardToUse
+      if (isPvP && gameState.id) {
+        // PvP game: use socket
+        socketMakeMove(gameState.id, selectedPiece, row, col, cardToUse)
+        // Optimistically clear selection - state update will come via socket
+        setSelectedPiece(null)
+        setSelectedCard(null)
+        setValidMoves([])
+        setLoading(false)
+      } else {
+        // AI game: use HTTP
+        const response = await fetch(`/api/game/${gameState.id}/move`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            pieceIndex: selectedPiece,
+            toRow: row,
+            toCol: col,
+            cardName: cardToUse
+          })
         })
-      })
 
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error)
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error)
 
-      setGameState(data.gameState)
-      setSelectedPiece(null)
-      setSelectedCard(null)
-      setValidMoves([])
+        setGameState(data.gameState)
+        setSelectedPiece(null)
+        setSelectedCard(null)
+        setValidMoves([])
 
-      if (data.gameEnded && pollingInterval) {
-        clearInterval(pollingInterval)
+        if (data.gameEnded && pollingInterval) {
+          clearInterval(pollingInterval)
+        }
+        setLoading(false)
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
-    } finally {
       setLoading(false)
     }
   }
@@ -347,16 +421,24 @@ function Game({ token, user, onLogout }: GameProps) {
     if (!gameState) return null
 
     const cells = []
-    for (let row = 0; row < 5; row++) {
-      for (let col = 0; col < 5; col++) {
+    // If player 2, iterate in reverse to flip board perspective
+    const rowStart = isPlayer2View ? 4 : 0
+    const rowEnd = isPlayer2View ? -1 : 5
+    const rowStep = isPlayer2View ? -1 : 1
+    const colStart = isPlayer2View ? 4 : 0
+    const colEnd = isPlayer2View ? -1 : 5
+    const colStep = isPlayer2View ? -1 : 1
+    
+    for (let row = rowStart; row !== rowEnd; row += rowStep) {
+      for (let col = colStart; col !== colEnd; col += colStep) {
         const cellPiece = gameState.board[row][col]
         const isTemple = (row === 0 && col === 2) || (row === 4 && col === 2)
         const isValidMove = validMoves.some(m => m.row === row && m.col === col)
         
         // Check if this cell contains the selected piece
         let isSelectedPiece = false
-        if (selectedPiece !== null && gameState.pieces[1][selectedPiece]) {
-          const piece = gameState.pieces[1][selectedPiece]
+        if (selectedPiece !== null && gameState.pieces[myPlayerNumber][selectedPiece]) {
+          const piece = gameState.pieces[myPlayerNumber][selectedPiece]
           isSelectedPiece = piece.row === row && piece.col === col
         }
         
@@ -382,19 +464,22 @@ function Game({ token, user, onLogout }: GameProps) {
           >
             {cellPiece && (
               <div 
-                className={`piece player${cellPiece.player} ${cellPiece.type} ${isSelectedPiece ? 'selected' : ''}`}
+                className={`piece player${cellPiece.player === myPlayerNumber ? '1' : '2'} ${cellPiece.type} ${isSelectedPiece ? 'selected' : ''}`}
                 onClick={(e) => {
+                  console.log('Piece clicked - cellPiece.player:', cellPiece.player, 'myPlayerNumber:', myPlayerNumber, 'isPvP:', isPvP, 'playerNumber:', playerNumber)
                   // Only handle clicks on own pieces to select them
                   // Let opponent pieces fall through to cell click for captures
-                  if (cellPiece.player === 1) {
+                  if (cellPiece.player === myPlayerNumber) {
                     e.stopPropagation()
-                    const pieceIndex = gameState.pieces[1].findIndex(
+                    const pieceIndex = gameState.pieces[myPlayerNumber].findIndex(
                       (p: Piece) => p.row === row && p.col === col
                     )
-                    debug('Clicked piece:', pieceIndex, 'at', row, col)
+                    debug('Clicked own piece:', pieceIndex, 'at', row, col)
                     handlePieceClick(pieceIndex)
+                  } else {
+                    console.log('Clicked opponent piece - should not select')
                   }
-                  // For player 2 pieces, let the click bubble to handleCellClick for captures
+                  // For opponent pieces, let the click bubble to handleCellClick for captures
                 }}
               />
             )}
@@ -406,12 +491,16 @@ function Game({ token, user, onLogout }: GameProps) {
     return <div className="board">{cells}</div>
   }
 
+  const myPlayerNumber = isPvP ? (playerNumber || 1) : 1
+  const isPlayer2View = myPlayerNumber === 2
+
   return (
     <div className="game-page">
       <div className="nav-bar">
         <h1>ONITAMA</h1>
         <div className="nav-links">
-          <Link to="/game">Game</Link>
+          <Link to="/game">Play vs AI</Link>
+          <Link to="/lobby">Multiplayer</Link>
           <Link to="/how-to-play">How to Play</Link>
           <Link to="/leaderboard">Leaderboard</Link>
           <button type="button" onClick={onLogout}>Logout</button>
@@ -436,16 +525,27 @@ function Game({ token, user, onLogout }: GameProps) {
             {gameState.winner && (
               <div className="winner-banner">
                 <h2>
-                  {gameState.winner === 1 ? '🎉 You Won!' : '😔 AI Won'}
+                  {gameState.winner === (isPvP ? playerNumber : 1) ? '🎉 You Won!' : `😔 ${isPvP ? opponentUsername : 'AI'} Won`}
                 </h2>
                 <p>Victory by {gameState.winCondition}</p>
+              </div>
+            )}
+            {opponentDisconnected && (
+              <div className="winner-banner" style={{ backgroundColor: '#ff9800' }}>
+                <h2>⚠️ Opponent Disconnected</h2>
+                <p>You win by default</p>
               </div>
             )}
 
             <div className="game-header">
               <div className="game-info-compact">
+                {isPvP && (
+                  <div className="pvp-info" style={{ marginBottom: '10px', fontSize: '16px' }}>
+                    <strong>Playing against:</strong> {opponentUsername}
+                  </div>
+                )}
                 <div className="turn-indicator">
-                  <strong>Turn:</strong> {gameState.currentPlayer === 1 ? 'You (Green)' : 'AI (Red)'}
+                  <strong>Turn:</strong> {gameState.currentPlayer === (isPvP ? playerNumber : 1) ? 'You' : `${isPvP ? opponentUsername : 'AI'}`}
                 </div>
                 <div className="game-hint">
                   {selectedPiece !== null && validMoves.length > 0 ? 
@@ -456,10 +556,12 @@ function Game({ token, user, onLogout }: GameProps) {
                 </div>
               </div>
               <div className="game-controls-compact">
-                <button type="button" className="btn-small" onClick={() => startNewGame('medium')}>
-                  New Game
-                </button>
-                {!gameState.winner && (
+                {!isPvP && (
+                  <button type="button" className="btn-small" onClick={() => startNewGame('medium')}>
+                    New Game
+                  </button>
+                )}
+                {!gameState.winner && !isPvP && (
                   <button type="button" className="btn-small btn-secondary" onClick={handleResign}>
                     Resign
                   </button>
@@ -470,9 +572,9 @@ function Game({ token, user, onLogout }: GameProps) {
             <div className="game-layout">
               <div className="main-game-area">
                 <div className="ai-cards-row">
-                  <h3>AI Cards</h3>
+                  <h3>{isPvP ? `${opponentUsername}'s Cards` : 'AI Cards'}</h3>
                   <div className="cards-horizontal">
-                    {gameState.player2Cards.map((card: string) => 
+                    {(isPlayer2View ? gameState.player1Cards : gameState.player2Cards).map((card: string) => 
                       renderCard(card, false, false)
                     )}
                   </div>
@@ -481,10 +583,10 @@ function Game({ token, user, onLogout }: GameProps) {
                 <div className="board-with-side">
                   <div className="captured-pieces-left">
                     <div className="captured-section">
-                      <h4>AI Captured</h4>
+                      <h4>{isPvP ? `${opponentUsername} Captured` : 'AI Captured'}</h4>
                       <div className="captured-list">
-                        {gameState.pieces[1].length < 5 && 
-                          Array(5 - gameState.pieces[1].length).fill(0).map((_, i) => (
+                        {gameState.pieces[myPlayerNumber].length < 5 && 
+                          Array(5 - gameState.pieces[myPlayerNumber].length).fill(0).map((_, i) => (
                             <div key={i} className="captured-piece player1">🥋</div>
                           ))
                         }
@@ -493,8 +595,8 @@ function Game({ token, user, onLogout }: GameProps) {
                     <div className="captured-section">
                       <h4>You Captured</h4>
                       <div className="captured-list">
-                        {gameState.pieces[2].length < 5 && 
-                          Array(5 - gameState.pieces[2].length).fill(0).map((_, i) => (
+                        {gameState.pieces[myPlayerNumber === 1 ? 2 : 1].length < 5 && 
+                          Array(5 - gameState.pieces[myPlayerNumber === 1 ? 2 : 1].length).fill(0).map((_, i) => (
                             <div key={i} className="captured-piece player2">🥋</div>
                           ))
                         }
@@ -511,8 +613,8 @@ function Game({ token, user, onLogout }: GameProps) {
                 <div className="player-cards-row">
                   <h3>Your Cards</h3>
                   <div className="cards-horizontal">
-                    {gameState.player1Cards.map((card: string) => 
-                      renderCard(card, !gameState.winner && gameState.currentPlayer === 1, card === selectedCard)
+                    {(isPlayer2View ? gameState.player2Cards : gameState.player1Cards).map((card: string) => 
+                      renderCard(card, !gameState.winner && gameState.currentPlayer === (isPvP ? playerNumber : 1), card === selectedCard)
                     )}
                   </div>
                 </div>

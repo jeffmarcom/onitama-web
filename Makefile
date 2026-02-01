@@ -72,6 +72,10 @@ deploy: ## Deploy to GCP Cloud Run (publicly accessible)
 		--region $(GCP_REGION) \
 		--project $(GCP_PROJECT) \
 		--allow-unauthenticated \
+		--timeout=3600 \
+		--max-instances=1 \
+		--min-instances=0 \
+		--concurrency=80 \
 		--set-env-vars JWT_SECRET=$$(openssl rand -base64 32)
 	@echo ""
 	@echo "Deployment complete! Your app is publicly accessible at the URL above."

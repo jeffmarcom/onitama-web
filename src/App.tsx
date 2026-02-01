@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useState } from 'react'
 import Login from './pages/Login'
 import Game from './pages/Game'
+import Lobby from './pages/Lobby'
 import Leaderboard from './pages/Leaderboard'
 import HowToPlay from './pages/HowToPlay'
 
@@ -50,6 +51,12 @@ function App() {
           path="/game" 
           element={
             token ? <Game token={token} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
+          } 
+        />
+        <Route 
+          path="/lobby" 
+          element={
+            token ? <Lobby token={token} onLogout={handleLogout} /> : <Navigate to="/login" />
           } 
         />
         <Route 
