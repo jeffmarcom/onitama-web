@@ -1,10 +1,16 @@
-.PHONY: help dev build clean logs prod-deploy
+.PHONY: help dev build clean logs deploy
 
 .DEFAULT_GOAL := help
 
-IMAGE_NAME = onitama-web
-CONTAINER_NAME = onitama-web-container
-PORT = 3000
+# Load environment variables from .env file if it exists
+-include .env
+export
+
+IMAGE_NAME ?= onitama-web
+CONTAINER_NAME ?= onitama-web-container
+PORT ?= 3000
+GCP_PROJECT ?=
+GCP_REGION ?=
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -45,20 +51,27 @@ clean: ## Stop and remove containers and images
 logs: ## View container logs
 	docker logs -f $(CONTAINER_NAME)
 
-prod-deploy: ## TODO: Deploy to GCP Cloud Run
-	@echo "TODO: Implement GCP Cloud Run deployment"
+deploy: ## Deploy to GCP Cloud Run (publicly accessible)
+	@if [ -z "$(GCP_PROJECT)" ]; then \
+		echo "Error: GCP_PROJECT is not set. Please create a .env file (see .env.example)."; \
+		exit 1; \
+	fi
+	@if [ -z "$(GCP_REGION)" ]; then \
+		echo "Error: GCP_REGION is not set. Please create a .env file (see .env.example)."; \
+		exit 1; \
+	fi
+	@echo "Deploying to Cloud Run..."
+	@echo "Project: $(GCP_PROJECT)"
+	@echo "Region: $(GCP_REGION)"
 	@echo ""
-	@echo "Steps to implement:"
-	@echo "  1. Authenticate with GCP: gcloud auth login"
-	@echo "  2. Set project: gcloud config set project YOUR_PROJECT_ID"
-	@echo "  3. Build and push to Container Registry:"
-	@echo "     docker build -t gcr.io/YOUR_PROJECT_ID/$(IMAGE_NAME) ."
-	@echo "     docker push gcr.io/YOUR_PROJECT_ID/$(IMAGE_NAME)"
-	@echo "  4. Deploy to Cloud Run:"
-	@echo "     gcloud run deploy $(IMAGE_NAME) \\"
-	@echo "       --image gcr.io/YOUR_PROJECT_ID/$(IMAGE_NAME) \\"
-	@echo "       --platform managed \\"
-	@echo "       --region us-central1 \\"
-	@echo "       --allow-unauthenticated"
+	@echo "Note: This will create a publicly accessible URL."
+	@echo "Data will reset on each deployment (file-based storage)."
 	@echo ""
-	@echo "Note: Requires persistent storage solution (e.g., Cloud Storage or Cloud SQL)"
+	gcloud run deploy $(IMAGE_NAME) \
+		--source . \
+		--region $(GCP_REGION) \
+		--project $(GCP_PROJECT) \
+		--allow-unauthenticated \
+		--set-env-vars JWT_SECRET=$$(openssl rand -base64 32)
+	@echo ""
+	@echo "Deployment complete! Your app is publicly accessible at the URL above."

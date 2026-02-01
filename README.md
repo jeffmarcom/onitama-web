@@ -61,7 +61,7 @@ make dev
 - `make build` - Build Docker image
 - `make logs` - View container logs
 - `make clean` - Stop and remove containers/images
-- `make prod-deploy` - TODO: Deploy to GCP Cloud Run
+- `make deploy` - Deploy to GCP Cloud Run (publicly accessible)
 
 ## Development
 
@@ -147,6 +147,35 @@ For a detailed tutorial, visit the "How to Play" page in the app.
 ### Leaderboard
 - `GET /api/leaderboard` - Get top 10 players
 
+## Deployment
+
+### Deploy to Google Cloud Run
+
+Cloud Run provides a free public URL without needing a custom domain:
+
+1. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install)
+
+2. Authenticate and set up your project:
+```bash
+gcloud auth login
+gcloud config set project $PROJECT
+```
+
+3. Deploy with a single command:
+```bash
+make deploy
+```
+
+This will:
+- Build your Docker image in the cloud
+- Deploy to Cloud Run with a public URL
+- Auto-generate a secure JWT secret
+- Enable public access (no authentication required)
+
+Your app will be available at: `https://onitama-web-xxxxx-uc.a.run.app`
+
+**Note:** Data will reset on each deployment since the app uses file-based storage. For production persistence, integrate Cloud Storage or Cloud SQL.
+
 ## Data Persistence
 
 The application uses file-based storage in the `data/` directory:
@@ -154,7 +183,13 @@ The application uses file-based storage in the `data/` directory:
 - `data/games.json` - Active and completed games
 - `data/leaderboard.json` - Player statistics
 
-In production, consider migrating to a proper database (PostgreSQL, MongoDB, etc.).
+**Local development:** Data persists in the `data/` directory.
+**Cloud Run:** Data resets on each deployment (ephemeral filesystem).
+
+For production persistence, consider:
+- Cloud Storage (GCS) for JSON files
+- Cloud SQL (PostgreSQL) for relational data
+- Firestore for NoSQL document storage
 
 ## Contributing
 
