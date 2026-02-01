@@ -1,7 +1,11 @@
 /// <reference types="react" />
+/// <reference types="vite/client" />
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { CARD_MOVES } from '../utils/cards'
+
+const DEBUG = import.meta.env.DEV
+const debug = (...args: unknown[]): void => { if (DEBUG) console.log(...args) }
 
 export interface Piece {
   row: number
@@ -100,28 +104,28 @@ function Game({ token, user, onLogout }: GameProps) {
   }
 
   const handlePieceClick = (pieceIndex: number) => {
-    console.log('handlePieceClick called with:', pieceIndex)
-    console.log('gameState:', gameState?.currentPlayer, 'winner:', gameState?.winner)
-    
+    debug('handlePieceClick called with:', pieceIndex)
+    debug('gameState:', gameState?.currentPlayer, 'winner:', gameState?.winner)
+
     if (!gameState || gameState.winner || gameState.currentPlayer !== 1) {
-      console.log('Cannot select piece - conditions not met')
+      debug('Cannot select piece - conditions not met')
       return
     }
     if (pieceIndex < 0) {
-      console.log('Invalid piece index')
+      debug('Invalid piece index')
       return
     }
-    
+
     // Toggle selection if clicking same piece
     if (selectedPiece === pieceIndex) {
-      console.log('Deselecting piece')
+      debug('Deselecting piece')
       setSelectedPiece(null)
       setValidMoves([])
       setSelectedCard(null)
       return
     }
-    
-    console.log('Selecting piece:', pieceIndex, 'selectedCard:', selectedCard)
+
+    debug('Selecting piece:', pieceIndex, 'selectedCard:', selectedCard)
     setSelectedPiece(pieceIndex)
     
     // Calculate all valid moves for this piece using any available card
@@ -129,16 +133,16 @@ function Game({ token, user, onLogout }: GameProps) {
   }
 
   const handleCardClick = (cardName: string) => {
-    console.log('handleCardClick called with:', cardName)
-    
+    debug('handleCardClick called with:', cardName)
+
     if (!gameState || gameState.winner || gameState.currentPlayer !== 1) {
-      console.log('Cannot select card - conditions not met')
+      debug('Cannot select card - conditions not met')
       return
     }
-    
+
     // Toggle selection if clicking same card
     if (selectedCard === cardName) {
-      console.log('Deselecting card')
+      debug('Deselecting card')
       setSelectedCard(null)
       // If piece is still selected, show all valid moves
       if (selectedPiece !== null) {
@@ -148,8 +152,8 @@ function Game({ token, user, onLogout }: GameProps) {
       }
       return
     }
-    
-    console.log('Selecting card:', cardName, 'selectedPiece:', selectedPiece)
+
+    debug('Selecting card:', cardName, 'selectedPiece:', selectedPiece)
     setSelectedCard(cardName)
     
     // Calculate valid moves if piece is selected
@@ -173,22 +177,22 @@ function Game({ token, user, onLogout }: GameProps) {
       const newRow = piece.row - dRow
       const newCol = piece.col + dCol
 
-      console.log(`Card ${cardName}, piece at [${piece.row},${piece.col}], move [${dRow},${dCol}] -> [${newRow},${newCol}]`)
+      debug(`Card ${cardName}, piece at [${piece.row},${piece.col}], move [${dRow},${dCol}] -> [${newRow},${newCol}]`)
 
       // Check bounds
       if (newRow < 0 || newRow > 4 || newCol < 0 || newCol > 4) {
-        console.log('  Out of bounds')
+        debug('  Out of bounds')
         return
       }
 
       // Check if destination has own piece
       const destPiece = gameState.board[newRow][newCol]
       if (destPiece && destPiece.player === 1) {
-        console.log('  Own piece')
+        debug('  Own piece')
         return
       }
 
-      console.log('  Valid!')
+      debug('  Valid!')
       valid.push({ row: newRow, col: newCol, cardName })
     })
 
@@ -199,36 +203,36 @@ function Game({ token, user, onLogout }: GameProps) {
     const piece = gameState.pieces[1][pieceIndex]
     if (!piece) return
 
-    console.log('Calculating moves for piece', pieceIndex, 'at position', piece.row, piece.col)
-    console.log('Available cards:', gameState.player1Cards)
+    debug('Calculating moves for piece', pieceIndex, 'at position', piece.row, piece.col)
+    debug('Available cards:', gameState.player1Cards)
 
     const allValid: ValidMove[] = []
 
     // Calculate moves for all available cards
     gameState.player1Cards.forEach((cardName: string) => {
       const moves = CARD_MOVES[cardName] || []
-      console.log(`Card ${cardName} moves:`, moves)
-      
+      debug(`Card ${cardName} moves:`, moves)
+
       moves.forEach(([dRow, dCol]: [number, number]) => {
         // Negate row (toward opponent), keep col as-is (right = positive)
         const newRow = piece.row - dRow
         const newCol = piece.col + dCol
-        console.log(`  Move [${dRow},${dCol}] -> [${newRow},${newCol}]`)
+        debug(`  Move [${dRow},${dCol}] -> [${newRow},${newCol}]`)
 
         // Check bounds
         if (newRow < 0 || newRow > 4 || newCol < 0 || newCol > 4) {
-          console.log('    Rejected: out of bounds')
+          debug('    Rejected: out of bounds')
           return
         }
 
         // Check if destination has own piece
         const destPiece = gameState.board[newRow][newCol]
         if (destPiece && destPiece.player === 1) {
-          console.log('    Rejected: own piece')
+          debug('    Rejected: own piece')
           return
         }
 
-        console.log('    Accepted!')
+        debug('    Accepted!')
         // Check if this move is already in the list
         if (!allValid.some(m => m.row === newRow && m.col === newCol)) {
           allValid.push({ row: newRow, col: newCol, cardName })
@@ -236,7 +240,7 @@ function Game({ token, user, onLogout }: GameProps) {
       })
     })
 
-    console.log('Valid moves:', allValid)
+    debug('Valid moves:', allValid)
     setValidMoves(allValid)
   }
 
@@ -390,7 +394,7 @@ function Game({ token, user, onLogout }: GameProps) {
                     const pieceIndex = gameState.pieces[1].findIndex(
                       (p: Piece) => p.row === row && p.col === col
                     )
-                    console.log('Clicked piece:', pieceIndex, 'at', row, col)
+                    debug('Clicked piece:', pieceIndex, 'at', row, col)
                     handlePieceClick(pieceIndex)
                   }
                   // For player 2 pieces, let the click bubble to handleCellClick for captures
