@@ -666,13 +666,16 @@ body {
   gap: 10px;
 }
 
-.dot {
+.step-dots .dot {
   width: 12px;
   height: 12px;
   border-radius: 50%;
   background: #444;
   cursor: pointer;
   transition: all 0.2s;
+  border: none;
+  padding: 0;
+  font: inherit;
 }
 
 .dot:hover {
