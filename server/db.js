@@ -26,6 +26,8 @@ function buildPgPoolConfig() {
       const env = process.env.PG_SSL_REJECT_UNAUTHORIZED;
       const rejectUnauthorized = env ? env.toLowerCase() === 'true' : false;
       config.ssl = { rejectUnauthorized };
+      // Avoid logging secrets; only expose whether SSL validation is disabled/enabled.
+      console.log('[db] DATABASE_URL indicates SSL; setting pg ssl.rejectUnauthorized=', rejectUnauthorized);
     }
   }
 
