@@ -37,6 +37,8 @@ DO_REDIS_NODES ?= 2
 # Production Secret (stored in cluster; not committed)
 PROD_SECRET_NAME ?= $(HELM_RELEASE)-prod-secrets
 PROD_JWT_SECRET ?=
+PROD_DATABASE_URL ?=
+PROD_REDIS_URL ?=
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -101,14 +103,16 @@ doks-setup-dev: ## Create DOKS cluster and container registry (dev)
 	@echo "Creating container registry $(DO_REGISTRY)..."
 	-doctl registry create $(DO_REGISTRY) --subscription-tier starter 2>/dev/null || true
 	@echo "Creating DOKS cluster $(DO_CLUSTER_NAME) in $(DO_REGION)..."
-	doctl kubernetes cluster create $(DO_CLUSTER_NAME) \
+	-doctl kubernetes cluster create $(DO_CLUSTER_NAME) \
 		--region $(DO_REGION) \
 		--auto-upgrade \
 		--node-pool "name=default;size=$(DO_NODE_SIZE);count=$(DO_NODE_COUNT);auto-scale=true;min-nodes=$(DO_NODE_COUNT);max-nodes=$(DO_NODE_MAX)"
+	@echo "Saving kubeconfig for $(DO_CLUSTER_NAME)..."
+	doctl kubernetes cluster kubeconfig save $(DO_CLUSTER_NAME) --set-current-context
 	@echo "Connecting registry to cluster..."
 	doctl registry kubernetes-manifest | kubectl apply -f -
 	@echo "Installing metrics-server for HPA..."
-	doctl kubernetes 1-click install $$(doctl kubernetes cluster list --format ID --no-header) --1-clicks metrics-server
+	-doctl kubernetes 1-click install $$(doctl kubernetes cluster list --format ID --no-header) --1-clicks metrics-server 2>/dev/null || true
 	@echo ""
 	@echo "Cluster ready! Run 'make doks-push' next."
 
@@ -124,17 +128,13 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 	@PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --format URI --no-header 2>/dev/null || true); \
 	REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --format URI --no-header 2>/dev/null || true); \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
-		echo "Connection by name failed; resolving IDs via JSON list..."; \
-		PG_ID=$$(doctl databases list --output json 2>/dev/null | python3 -c 'import sys,json; j=json.load(sys.stdin); target=sys.argv[1]; keys=[\"database_clusters\",\"databases\",\"clusters\",\"items\",\"data\"]; arr=next((j[k] for k in keys if isinstance(j,dict) and isinstance(j.get(k),list)), None); arr=j if arr is None and isinstance(j,list) else arr; m=next((x for x in (arr or []) if x.get(\"name\")==target or x.get(\"slug\")==target), None); print((m or {}).get(\"id\",\"\"), end=\"\")' "$(DO_DB_PG_NAME)"); \
-		REDIS_ID=$$(doctl databases list --output json 2>/dev/null | python3 -c 'import sys,json; j=json.load(sys.stdin); target=sys.argv[1]; keys=[\"database_clusters\",\"databases\",\"clusters\",\"items\",\"data\"]; arr=next((j[k] for k in keys if isinstance(j,dict) and isinstance(j.get(k),list)), None); arr=j if arr is None and isinstance(j,list) else arr; m=next((x for x in (arr or []) if x.get(\"name\")==target or x.get(\"slug\")==target), None); print((m or {}).get(\"id\",\"\"), end=\"\")' "$(DO_DB_REDIS_NAME)"); \
-		if [ -z "$$PG_ID" ] || [ -z "$$REDIS_ID" ]; then \
-			echo "Error: could not resolve managed database IDs (check doctl auth and database names)."; \
-			exit 1; \
-		fi; \
-		PG_URI=$$(doctl databases connection $$PG_ID --format URI --no-header); \
-		REDIS_URI=$$(doctl databases connection $$REDIS_ID --format URI --no-header); \
-		if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
-			echo "Error: could not fetch connection URIs."; \
+		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
+			PG_URI="$(PROD_DATABASE_URL)"; \
+			REDIS_URI="$(PROD_REDIS_URL)"; \
+		else \
+			echo "Error: could not fetch managed connection URIs via doctl."; \
+			echo "Provide them explicitly to proceed:"; \
+			echo "  make doks-setup ENV=prod PROD_DATABASE_URL=\"...\" PROD_REDIS_URL=\"...\""; \
 			exit 1; \
 		fi; \
 	fi; \
