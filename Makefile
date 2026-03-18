@@ -310,7 +310,7 @@ doks-reset: ## Disable load generator and reset scaling to defaults
 doks-teardown: ## Teardown DOKS resources (ENV=dev|prod)
 	@$(MAKE) doks-teardown-$(ENV)
 
-doks-teardown-dev: ## Delete DOKS cluster and registry to stop billing (dev)
+doks-teardown-dev: ## Alias: make doks-teardown ENV=dev (ENV not needed here)
 	@echo "Uninstalling Helm release..."
 	-helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE) 2>/dev/null || true
 	@echo "Deleting cluster $(DO_CLUSTER_NAME)..."
@@ -320,7 +320,7 @@ doks-teardown-dev: ## Delete DOKS cluster and registry to stop billing (dev)
 	@echo ""
 	@echo "Teardown complete. All cloud resources removed."
 
-doks-teardown-prod: ## Delete DOKS cluster/registry AND managed databases (prod)
+doks-teardown-prod: ## Alias: make doks-teardown ENV=prod (ENV not needed here)
 	@echo "Uninstalling Helm release..."
 	@if helm status $(HELM_RELEASE) --namespace $(K8S_NAMESPACE) >/dev/null 2>&1; then \
 		helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE); \
