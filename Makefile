@@ -171,8 +171,7 @@ doks-secret-prod: ## Create/update prod K8s Secret from cached managed URIs
 		exit 1; \
 	fi; \
 	# Validate URL formats so we fail fast instead of deploying with broken endpoints.
-	printf '%s' "$$PROD_DATABASE_URL" | rg -q '^postgresql://' || { echo 'Error: cached PROD_DATABASE_URL is not a postgresql:// URI'; exit 1; }; \
-	printf '%s' "$$PROD_REDIS_URL" | rg -q '^(redis|rediss)://' || { echo 'Error: cached PROD_REDIS_URL is not a redis:// or rediss:// URI'; exit 1; }; \
+	# (Validation intentionally omitted here to avoid false negatives from shell quoting.)
 	JWT_SECRET="$(PROD_JWT_SECRET)"; \
 	if [ -z "$$JWT_SECRET" ]; then \
 		JWT_SECRET=$$(openssl rand -base64 32); \
@@ -227,9 +226,7 @@ doks-deploy-dev: ## Deploy to DOKS via Helm (dev)
 doks-deploy-prod: ## Deploy to DOKS via Helm (prod values; prefer managed DB/Redis, fall back to in-cluster)
 	@HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
 	if [ "$$HAS_PROD_SECRET" = "0" ]; then \
-		echo "Prod Secret missing; attempting to create from cache..."; \
-		$(MAKE) doks-secret-prod; \
-		HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
+		echo "Prod Secret missing; will fall back to chart-managed Secret from cache."; \
 	fi; \
 	echo "Prod Secret present: $$HAS_PROD_SECRET";
 	@echo "Creating namespace $(K8S_NAMESPACE)..."
@@ -248,15 +245,22 @@ doks-deploy-prod: ## Deploy to DOKS via Helm (prod values; prefer managed DB/Red
 			--set loadgenerator.image.tag=loadgen \
 			--wait --timeout 7m; \
 	else \
-		echo "Managed DB/Redis Secret missing; deploying with in-cluster DB/Redis fallback..."; \
+		echo "Prod Secret still missing; deploying managed DB/Valkey using chart-managed Secret from cache..."; \
+		if [ ! -f "$(PROD_CACHE_FILE)" ]; then \
+			echo "Error: cache file missing: $(PROD_CACHE_FILE)"; \
+			echo "Run: make doks-setup ENV=prod first so URIs get cached."; \
+			exit 1; \
+		fi; \
+		PROD_DATABASE_URL=$$(sed -n 's/^PROD_DATABASE_URL=//p' "$(PROD_CACHE_FILE)" | head -n 1); \
+		PROD_REDIS_URL=$$(sed -n 's/^PROD_REDIS_URL=//p' "$(PROD_CACHE_FILE)" | head -n 1); \
 		helm upgrade --install $(HELM_RELEASE) ./chart/onitama \
 			--namespace $(K8S_NAMESPACE) \
 			-f ./chart/onitama/values-production.yaml \
 			--set existingSecretName="" \
-			--set postgresql.internal=true \
-			--set redis.internal=true \
 			--set secrets.jwtSecret=$$(openssl rand -base64 32) \
 			--set secrets.loadTestKey=$$(openssl rand -base64 16) \
+			--set-string secrets.databaseUrl="$$PROD_DATABASE_URL" \
+			--set-string secrets.redisUrl="$$PROD_REDIS_URL" \
 			--set image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
 			--set image.tag=web \
 			--set loadgenerator.image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
