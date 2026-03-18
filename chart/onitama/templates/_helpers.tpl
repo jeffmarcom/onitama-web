@@ -23,3 +23,15 @@ Selector labels for the app deployment.
 app.kubernetes.io/name: onitama
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Secret name used by the app and load generator.
+If existingSecretName is provided, use it; otherwise use the chart-managed secret.
+*/}}
+{{- define "onitama.secretName" -}}
+{{- if .Values.existingSecretName -}}
+{{- .Values.existingSecretName -}}
+{{- else -}}
+{{- printf "%s-secrets" (include "onitama.fullname" .) -}}
+{{- end -}}
+{{- end }}

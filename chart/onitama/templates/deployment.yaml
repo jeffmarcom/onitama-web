@@ -36,22 +36,22 @@ spec:
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "onitama.fullname" . }}-secrets
+                  name: {{ include "onitama.secretName" . }}
                   key: JWT_SECRET
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "onitama.fullname" . }}-secrets
+                  name: {{ include "onitama.secretName" . }}
                   key: DATABASE_URL
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "onitama.fullname" . }}-secrets
+                  name: {{ include "onitama.secretName" . }}
                   key: REDIS_URL
             - name: LOAD_TEST_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "onitama.fullname" . }}-secrets
+                  name: {{ include "onitama.secretName" . }}
                   key: LOAD_TEST_KEY
           livenessProbe:
             httpGet:

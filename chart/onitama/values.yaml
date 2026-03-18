@@ -32,6 +32,10 @@ autoscaling:
   scaleDownStabilizationSeconds: 300
 
 # ── Secrets ──────────────────────────────────────────────────────────────────
+# If set, the chart will NOT create a Secret and will instead read env vars
+# (JWT_SECRET, DATABASE_URL, REDIS_URL, LOAD_TEST_KEY) from this existing Secret.
+existingSecretName: ""
+#
 # These will be base64-encoded in the Secret manifest.
 # Override via --set or a separate values file for real deployments.
 secrets:

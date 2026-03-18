@@ -40,7 +40,7 @@ spec:
             - name: LOAD_TEST_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "onitama.fullname" . }}-secrets
+                  name: {{ include "onitama.secretName" . }}
                   key: LOAD_TEST_KEY
           resources:
             {{- toYaml .Values.loadgenerator.resources | nindent 12 }}

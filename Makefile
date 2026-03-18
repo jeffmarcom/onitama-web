@@ -1,4 +1,4 @@
-.PHONY: help dev build clean logs deploy doks-setup doks-push doks-deploy doks-deploy-prod doks-status doks-loadtest doks-reset doks-teardown destroy
+.PHONY: help dev build clean logs deploy doks-setup doks-setup-dev doks-setup-prod doks-push doks-deploy doks-deploy-dev doks-deploy-prod doks-status doks-loadtest doks-reset doks-teardown destroy
 
 .DEFAULT_GOAL := help
 
@@ -22,16 +22,27 @@ DO_NODE_MAX ?= 4
 HELM_RELEASE ?= onitama
 K8S_NAMESPACE ?= onitama
 
-# Managed services (production) — provide via env or `make VAR=...`
-PROD_DATABASE_URL ?=
-PROD_REDIS_URL ?=
+# Environment selector for DOKS targets: dev|prod
+ENV ?= dev
+
+# Managed services (prod) configuration
+DO_DB_PG_NAME ?= $(HELM_RELEASE)-pg
+DO_DB_REDIS_NAME ?= $(HELM_RELEASE)-redis
+DO_DB_REGION ?= $(DO_REGION)
+DO_PG_SIZE ?= db-s-1vcpu-1gb
+DO_PG_NODES ?= 2
+DO_REDIS_SIZE ?= db-s-1vcpu-1gb
+DO_REDIS_NODES ?= 2
+
+# Production Secret (stored in cluster; not committed)
+PROD_SECRET_NAME ?= $(HELM_RELEASE)-prod-secrets
 PROD_JWT_SECRET ?=
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
 	@echo ''
 	@echo 'Available targets:'
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
+	@grep -h -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
 dev: ## Run development environment (app + Postgres + Redis)
 	@echo "Starting services with Docker Compose..."
@@ -83,7 +94,10 @@ deploy: ## Deploy to GCP Cloud Run (publicly accessible)
 
 # ── DigitalOcean Kubernetes (DOKS) targets ───────────────────────────────────
 
-doks-setup: ## Create DOKS cluster and container registry
+doks-setup: ## Setup DOKS resources (ENV=dev|prod)
+	@$(MAKE) doks-setup-$(ENV)
+
+doks-setup-dev: ## Create DOKS cluster and container registry (dev)
 	@echo "Creating container registry $(DO_REGISTRY)..."
 	-doctl registry create $(DO_REGISTRY) --subscription-tier starter 2>/dev/null || true
 	@echo "Creating DOKS cluster $(DO_CLUSTER_NAME) in $(DO_REGION)..."
@@ -98,6 +112,45 @@ doks-setup: ## Create DOKS cluster and container registry
 	@echo ""
 	@echo "Cluster ready! Run 'make doks-push' next."
 
+doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and persist URLs in a K8s Secret
+	@$(MAKE) doks-setup-dev
+	@echo ""
+	@echo "Creating managed PostgreSQL: $(DO_DB_PG_NAME) (region=$(DO_DB_REGION), size=$(DO_PG_SIZE), nodes=$(DO_PG_NODES))..."
+	-doctl databases create $(DO_DB_PG_NAME) --engine pg --region $(DO_DB_REGION) --size $(DO_PG_SIZE) --num-nodes $(DO_PG_NODES) --wait 2>/dev/null || true
+	@echo "Creating managed Redis: $(DO_DB_REDIS_NAME) (region=$(DO_DB_REGION), size=$(DO_REDIS_SIZE), nodes=$(DO_REDIS_NODES))..."
+	-doctl databases create $(DO_DB_REDIS_NAME) --engine redis --region $(DO_DB_REGION) --size $(DO_REDIS_SIZE) --num-nodes $(DO_REDIS_NODES) --wait 2>/dev/null || true
+	@echo ""
+	@echo "Fetching connection strings..."
+	@PG_ID=$$(doctl databases list --format Name,ID --no-header | awk '$$1=="$(DO_DB_PG_NAME)" {print $$2}'); \
+	REDIS_ID=$$(doctl databases list --format Name,ID --no-header | awk '$$1=="$(DO_DB_REDIS_NAME)" {print $$2}'); \
+	if [ -z "$$PG_ID" ] || [ -z "$$REDIS_ID" ]; then \
+		echo "Error: could not resolve database IDs (check doctl auth and database names)."; \
+		exit 1; \
+	fi; \
+	PG_URI=$$(doctl databases connection $$PG_ID --format URI --no-header); \
+	REDIS_URI=$$(doctl databases connection $$REDIS_ID --format URI --no-header); \
+	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
+		echo "Error: could not fetch connection URIs."; \
+		exit 1; \
+	fi; \
+	JWT_SECRET="$(PROD_JWT_SECRET)"; \
+	if [ -z "$$JWT_SECRET" ]; then \
+		JWT_SECRET=$$(openssl rand -base64 32); \
+		echo "Generated PROD JWT secret (stored in K8s Secret)."; \
+	fi; \
+	LOAD_TEST_KEY=$$(openssl rand -base64 16); \
+	echo "Creating/updating K8s Secret $(PROD_SECRET_NAME) in namespace $(K8S_NAMESPACE)..."; \
+	kubectl create namespace $(K8S_NAMESPACE) 2>/dev/null || true; \
+	kubectl delete secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) 2>/dev/null || true; \
+	kubectl create secret generic -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) \
+		--from-literal=JWT_SECRET="$$JWT_SECRET" \
+		--from-literal=DATABASE_URL="$$PG_URI" \
+		--from-literal=REDIS_URL="$$REDIS_URI" \
+		--from-literal=LOAD_TEST_KEY="$$LOAD_TEST_KEY"
+	@echo ""
+	@echo "Prod resources ready."
+	@echo "Next: make doks-deploy ENV=prod"
+
 doks-push: ## Build and push images to DigitalOcean Container Registry
 	@echo "Logging into registry..."
 	doctl registry login
@@ -110,7 +163,10 @@ doks-push: ## Build and push images to DigitalOcean Container Registry
 	@echo ""
 	@echo "Images pushed! Run 'make doks-deploy' next."
 
-doks-deploy: ## Deploy to DOKS via Helm
+doks-deploy: ## Deploy to DOKS via Helm (ENV=dev|prod)
+	@$(MAKE) doks-deploy-$(ENV)
+
+doks-deploy-dev: ## Deploy to DOKS via Helm (dev)
 	@echo "Creating namespace $(K8S_NAMESPACE)..."
 	kubectl create namespace $(K8S_NAMESPACE) 2>/dev/null || true
 	@echo "Copying registry credentials to namespace..."
@@ -131,17 +187,9 @@ doks-deploy: ## Deploy to DOKS via Helm
 	@kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null; echo ""
 	@echo "App available at: http://$$(kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
 
-doks-deploy-prod: ## Deploy to DOKS via Helm (production values + managed DB/Redis)
-	@if [ -z "$(PROD_DATABASE_URL)" ]; then \
-		echo "Error: PROD_DATABASE_URL is not set (managed Postgres connection string)."; \
-		exit 1; \
-	fi
-	@if [ -z "$(PROD_REDIS_URL)" ]; then \
-		echo "Error: PROD_REDIS_URL is not set (managed Redis connection string)."; \
-		exit 1; \
-	fi
-	@if [ -z "$(PROD_JWT_SECRET)" ]; then \
-		echo "Error: PROD_JWT_SECRET is not set (JWT signing secret)."; \
+doks-deploy-prod: ## Deploy to DOKS via Helm (prod values + managed DB/Redis via existing K8s Secret)
+	@if ! kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1; then \
+		echo "Error: Secret $(PROD_SECRET_NAME) not found in namespace $(K8S_NAMESPACE). Run: make doks-setup ENV=prod"; \
 		exit 1; \
 	fi
 	@echo "Creating namespace $(K8S_NAMESPACE)..."
@@ -152,10 +200,7 @@ doks-deploy-prod: ## Deploy to DOKS via Helm (production values + managed DB/Red
 	helm upgrade --install $(HELM_RELEASE) ./chart/onitama \
 		--namespace $(K8S_NAMESPACE) \
 		-f ./chart/onitama/values-production.yaml \
-		--set secrets.jwtSecret="$(PROD_JWT_SECRET)" \
-		--set secrets.databaseUrl="$(PROD_DATABASE_URL)" \
-		--set secrets.redisUrl="$(PROD_REDIS_URL)" \
-		--set secrets.loadTestKey=$$(openssl rand -base64 16) \
+		--set existingSecretName="$(PROD_SECRET_NAME)" \
 		--set image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
 		--set image.tag=web \
 		--set loadgenerator.image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \

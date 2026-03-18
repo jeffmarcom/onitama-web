@@ -21,6 +21,9 @@ autoscaling:
   targetCPUUtilizationPercentage: 60
   scaleDownStabilizationSeconds: 600
 
+# Use a pre-provisioned Secret in production (created by `make doks-setup ENV=prod`).
+existingSecretName: "onitama-prod-secrets"
+
 # ── Managed Database (DigitalOcean Managed PostgreSQL) ───────────────────────
 postgresql:
   internal: false
@@ -32,6 +35,6 @@ redis:
   # Provide via --set secrets.redisUrl=<connection-string>
 
 secrets:
-  jwtSecret: ""     # Must be set via --set secrets.jwtSecret=<value>
-  databaseUrl: ""   # Must be set via --set secrets.databaseUrl=<value>
-  redisUrl: ""      # Must be set via --set secrets.redisUrl=<value>
+  jwtSecret: ""     # Ignored when existingSecretName is set
+  databaseUrl: ""   # Ignored when existingSecretName is set
+  redisUrl: ""      # Ignored when existingSecretName is set
