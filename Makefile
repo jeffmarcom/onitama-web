@@ -125,19 +125,19 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 	fi
 	@echo ""
 	@echo "Creating managed PostgreSQL: $(DO_DB_PG_NAME) (region=$(DO_DB_REGION), size=$(DO_PG_SIZE), nodes=$(DO_PG_NODES))..."
-	-doctl databases create $(DO_DB_PG_NAME) --engine pg --region $(DO_DB_REGION) --size $(DO_PG_SIZE) --num-nodes $(DO_PG_NODES) --wait 2>/dev/null || true
+	doctl databases create $(DO_DB_PG_NAME) --engine pg --region $(DO_DB_REGION) --size $(DO_PG_SIZE) --num-nodes $(DO_PG_NODES) --wait || true
 	@echo "Creating managed Redis: $(DO_DB_REDIS_NAME) (region=$(DO_DB_REGION), size=$(DO_REDIS_SIZE), nodes=$(DO_REDIS_NODES))..."
-	-doctl databases create $(DO_DB_REDIS_NAME) --engine redis --region $(DO_DB_REGION) --size $(DO_REDIS_SIZE) --num-nodes $(DO_REDIS_NODES) --wait 2>/dev/null || true
+	doctl databases create $(DO_DB_REDIS_NAME) --engine valkey --region $(DO_DB_REGION) --size $(DO_REDIS_SIZE) --num-nodes $(DO_REDIS_NODES) --wait || true
 	@echo ""
 	@echo "Fetching connection strings..."
-	@PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --format URI --no-header 2>/dev/null || true); \
-	REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --format URI --no-header 2>/dev/null || true); \
+	@PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --format URI --no-header || true); \
+	REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --format URI --no-header || true); \
 	# If public connection strings aren't accessible, try VPC/private connections.
 	if [ -z "$$PG_URI" ]; then \
-		PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --private --format URI --no-header 2>/dev/null || true); \
+		PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --private --format URI --no-header || true); \
 	fi; \
 	if [ -z "$$REDIS_URI" ]; then \
-		REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --private --format URI --no-header 2>/dev/null || true); \
+		REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --private --format URI --no-header || true); \
 	fi; \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
 		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
