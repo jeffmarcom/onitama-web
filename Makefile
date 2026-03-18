@@ -148,7 +148,8 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 			echo "Tried: doctl databases connection <name> and --private."; \
 			echo "Provide them explicitly to proceed:"; \
 			echo "  make doks-setup ENV=prod PROD_DATABASE_URL=\"...\" PROD_REDIS_URL=\"...\""; \
-			exit 1; \
+			echo "Skipping prod Secret creation; doks-deploy ENV=prod will fall back to in-cluster DB/Redis."; \
+			exit 0; \
 		fi; \
 	fi; \
 	JWT_SECRET="$(PROD_JWT_SECRET)"; \
@@ -205,25 +206,40 @@ doks-deploy-dev: ## Deploy to DOKS via Helm (dev)
 	@kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null; echo ""
 	@echo "App available at: http://$$(kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
 
-doks-deploy-prod: ## Deploy to DOKS via Helm (prod values + managed DB/Redis via existing K8s Secret)
-	@if ! kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1; then \
-		echo "Error: Secret $(PROD_SECRET_NAME) not found in namespace $(K8S_NAMESPACE). Run: make doks-setup ENV=prod"; \
-		exit 1; \
-	fi
+doks-deploy-prod: ## Deploy to DOKS via Helm (prod values; prefer managed DB/Redis, fall back to in-cluster)
+	@HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
+	echo "Prod Secret present: $$HAS_PROD_SECRET"; \
 	@echo "Creating namespace $(K8S_NAMESPACE)..."
 	kubectl create namespace $(K8S_NAMESPACE) 2>/dev/null || true
 	@echo "Copying registry credentials to namespace..."
 	doctl registry kubernetes-manifest | sed 's/namespace: kube-system/namespace: $(K8S_NAMESPACE)/' | kubectl apply -n $(K8S_NAMESPACE) -f -
-	@echo "Deploying with Helm (production values)..."
-	helm upgrade --install $(HELM_RELEASE) ./chart/onitama \
-		--namespace $(K8S_NAMESPACE) \
-		-f ./chart/onitama/values-production.yaml \
-		--set existingSecretName="$(PROD_SECRET_NAME)" \
-		--set image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
-		--set image.tag=web \
-		--set loadgenerator.image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
-		--set loadgenerator.image.tag=loadgen \
-		--wait --timeout 7m
+	@if [ "$$HAS_PROD_SECRET" = "1" ]; then \
+		echo "Deploying with Helm (production values + existing prod Secret)..."; \
+		helm upgrade --install $(HELM_RELEASE) ./chart/onitama \
+			--namespace $(K8S_NAMESPACE) \
+			-f ./chart/onitama/values-production.yaml \
+			--set existingSecretName="$(PROD_SECRET_NAME)" \
+			--set image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
+			--set image.tag=web \
+			--set loadgenerator.image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
+			--set loadgenerator.image.tag=loadgen \
+			--wait --timeout 7m; \
+	else \
+		echo "Managed DB/Redis Secret missing; deploying with in-cluster DB/Redis fallback..."; \
+		helm upgrade --install $(HELM_RELEASE) ./chart/onitama \
+			--namespace $(K8S_NAMESPACE) \
+			-f ./chart/onitama/values-production.yaml \
+			--set existingSecretName="" \
+			--set postgresql.internal=true \
+			--set redis.internal=true \
+			--set secrets.jwtSecret=$$(openssl rand -base64 32) \
+			--set secrets.loadTestKey=$$(openssl rand -base64 16) \
+			--set image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
+			--set image.tag=web \
+			--set loadgenerator.image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
+			--set loadgenerator.image.tag=loadgen \
+			--wait --timeout 7m; \
+	fi
 	@echo ""
 	@echo "Production deployment complete!"
 	@echo "Waiting for Load Balancer IP..."
