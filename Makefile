@@ -212,7 +212,7 @@ doks-deploy-dev: ## Deploy to DOKS via Helm (dev)
 
 doks-deploy-prod: ## Deploy to DOKS via Helm (prod values; prefer managed DB/Redis, fall back to in-cluster)
 	@HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
-	echo "Prod Secret present: $$HAS_PROD_SECRET"; \
+	echo "Prod Secret present: $$HAS_PROD_SECRET";
 	@echo "Creating namespace $(K8S_NAMESPACE)..."
 	kubectl create namespace $(K8S_NAMESPACE) 2>/dev/null || true
 	@echo "Copying registry credentials to namespace..."
