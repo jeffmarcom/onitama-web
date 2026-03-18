@@ -125,35 +125,41 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 	fi
 	@echo ""
 	@echo "Creating managed PostgreSQL/Valkey and extracting URIs..."
-	@PG_URI=$$(doctl databases create $(DO_DB_PG_NAME) \
-		--engine pg \
-		--region $(DO_DB_REGION) \
-		--size $(DO_PG_SIZE) \
-		--num-nodes $(DO_PG_NODES) \
-		--wait 2>&1 | grep -oE 'postgresql://[^[:space:]]+' | head -n 1 ); \
-	REDIS_URI=$$(doctl databases create $(DO_DB_REDIS_NAME) \
-		--engine valkey \
-		--region $(DO_DB_REGION) \
-		--size $(DO_REDIS_SIZE) \
-		--num-nodes $(DO_REDIS_NODES) \
-		--wait 2>&1 | grep -oE '(rediss|redis)://[^[:space:]]+' | head -n 1 ); \
-	# If `doctl ... create` output does not include URIs (e.g., already exists), fetch from `doctl databases list`.
-	if [ -z "$$PG_URI" ]; then \
-		PG_URI=$$(doctl databases list --format Name,URI --no-header 2>/dev/null | awk '$$1=="$(DO_DB_PG_NAME)" {print $$2; exit}' || true); \
-	fi; \
-	if [ -z "$$REDIS_URI" ]; then \
-		REDIS_URI=$$(doctl databases list --format Name,URI --no-header 2>/dev/null | awk '$$1=="$(DO_DB_REDIS_NAME)" {print $$2; exit}' || true); \
-	fi; \
+	@PG_URI=""; REDIS_URI=""; \
+	for attempt in 1 2; do \
+		echo "Managed services attempt $$attempt..."; \
+		PG_URI=$$(doctl databases create $(DO_DB_PG_NAME) \
+			--engine pg \
+			--region $(DO_DB_REGION) \
+			--size $(DO_PG_SIZE) \
+			--num-nodes $(DO_PG_NODES) \
+			--wait 2>&1 | grep -oE 'postgresql://[^[:space:]]+' | head -n 1); \
+		REDIS_URI=$$(doctl databases create $(DO_DB_REDIS_NAME) \
+			--engine valkey \
+			--region $(DO_DB_REGION) \
+			--size $(DO_REDIS_SIZE) \
+			--num-nodes $(DO_REDIS_NODES) \
+			--wait 2>&1 | grep -oE '(rediss|redis)://[^[:space:]]+' | head -n 1); \
+		if [ -n "$$PG_URI" ] && [ -n "$$REDIS_URI" ]; then \
+			break; \
+		fi; \
+		if [ "$$attempt" = "1" ]; then \
+			echo "Could not extract URIs from doctl create output (likely clusters already exist)."; \
+			echo "Recreating managed clusters once to force URI output..."; \
+			doctl databases delete $(DO_DB_PG_NAME) -f 2>/dev/null || true; \
+			doctl databases delete $(DO_DB_REDIS_NAME) -f 2>/dev/null || true; \
+		fi; \
+	done; \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
 		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
 			PG_URI="$(PROD_DATABASE_URL)"; \
 			REDIS_URI="$(PROD_REDIS_URL)"; \
 		else \
-			echo "Error: could not extract managed connection URIs from doctl create output."; \
-			echo "Provide them explicitly to proceed:"; \
+			echo "Error: could not extract managed connection URIs from doctl."; \
+			echo "If this keeps failing, your DO token likely cannot delete/recreate managed clusters."; \
+			echo "As a fallback you can provide:"; \
 			echo "  make doks-setup ENV=prod PROD_DATABASE_URL=\"...\" PROD_REDIS_URL=\"...\""; \
-			echo "Skipping prod Secret creation; doks-deploy ENV=prod will fall back to in-cluster DB/Redis."; \
-			exit 0; \
+			exit 1; \
 		fi; \
 	fi; \
 	JWT_SECRET="$(PROD_JWT_SECRET)"; \
