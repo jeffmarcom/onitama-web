@@ -10,9 +10,9 @@ function buildPgPoolConfig() {
     connectionString: DATABASE_URL,
   };
 
-  // DigitalOcean Managed PostgreSQL uses TLS and can present a chain that `node-postgres`
-  // treats as self-signed unless you provide a CA bundle. For this take-home, default
-  // to not rejecting unauthorized certs when SSL is clearly intended.
+  // Some managed Postgres providers use TLS and may present a certificate chain that
+  // causes `node-postgres` to fail strict verification unless you provide CA bundle(s).
+  // For this take-home, default to allowing such chains when SSL is clearly intended.
   //
   // Override by setting:
   //   PG_SSL_REJECT_UNAUTHORIZED=true  (strict verification)
