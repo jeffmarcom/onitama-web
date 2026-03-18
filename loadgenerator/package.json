@@ -1,0 +1,12 @@
+{
+  "name": "onitama-loadgenerator",
+  "version": "1.0.0",
+  "description": "Traffic simulator for Onitama Web",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.2"
+  }
+}
