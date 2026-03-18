@@ -6,8 +6,9 @@ const { Pool } = pg;
 const DATABASE_URL = process.env.DATABASE_URL;
 
 function buildPgPoolConfig() {
+  let connectionString = DATABASE_URL;
   const config = {
-    connectionString: DATABASE_URL,
+    connectionString,
   };
 
   // Some managed Postgres providers use TLS and may present a certificate chain that
@@ -25,6 +26,21 @@ function buildPgPoolConfig() {
     if (sslLikely) {
       const env = process.env.PG_SSL_REJECT_UNAUTHORIZED;
       const rejectUnauthorized = env ? env.toLowerCase() === 'true' : false;
+
+      // `pg` may internally translate `sslmode=...` from the URL into its own `ssl` options
+      // (potentially overwriting our explicit rejectUnauthorized). Strip sslmode so our `ssl`
+      // option is authoritative.
+      if (/sslmode=/.test(connectionString)) {
+        try {
+          const u = new URL(connectionString);
+          u.searchParams.delete('sslmode');
+          connectionString = u.toString();
+          config.connectionString = connectionString;
+        } catch {
+          // If parsing fails, fall back to leaving the connection string unchanged.
+        }
+      }
+
       config.ssl = { rejectUnauthorized };
       // Avoid logging secrets; only expose whether SSL validation is disabled/enabled.
       console.log('[db] DATABASE_URL indicates SSL; setting pg ssl.rejectUnauthorized=', rejectUnauthorized);
