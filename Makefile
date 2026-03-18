@@ -322,17 +322,21 @@ doks-teardown-dev: ## Delete DOKS cluster and registry to stop billing (dev)
 
 doks-teardown-prod: ## Delete DOKS cluster/registry AND managed databases (prod)
 	@echo "Uninstalling Helm release..."
-	-helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE) 2>/dev/null || true
+	@if helm status $(HELM_RELEASE) --namespace $(K8S_NAMESPACE) >/dev/null 2>&1; then \
+		helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE); \
+	else \
+		echo "Helm release $(HELM_RELEASE) not found; skipping uninstall."; \
+	fi
 	@echo "Deleting K8s Secret $(PROD_SECRET_NAME) (if present)..."
-	-kubectl delete secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) 2>/dev/null || true
+	-kubectl delete secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) --ignore-not-found=true
 	@echo "Deleting managed PostgreSQL $(DO_DB_PG_NAME)..."
-	-doctl databases delete $(DO_DB_PG_NAME) --force 2>/dev/null || true
+	doctl databases delete $(DO_DB_PG_NAME) --force
 	@echo "Deleting managed Redis $(DO_DB_REDIS_NAME)..."
-	-doctl databases delete $(DO_DB_REDIS_NAME) --force 2>/dev/null || true
+	doctl databases delete $(DO_DB_REDIS_NAME) --force
 	@echo "Deleting cluster $(DO_CLUSTER_NAME)..."
-	-doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force 2>/dev/null || true
+	doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force
 	@echo "Deleting registry $(DO_REGISTRY)..."
-	-doctl registry delete --force 2>/dev/null || true
+	doctl registry delete --force
 	@echo ""
 	@echo "Teardown complete. All cloud resources removed."
 
