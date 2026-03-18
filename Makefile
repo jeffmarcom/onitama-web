@@ -30,9 +30,9 @@ DO_DB_PG_NAME ?= $(HELM_RELEASE)-pg
 DO_DB_REDIS_NAME ?= $(HELM_RELEASE)-redis
 DO_DB_REGION ?= $(DO_REGION)
 DO_PG_SIZE ?= db-s-1vcpu-1gb
-DO_PG_NODES ?= 2
+DO_PG_NODES ?= 1
 DO_REDIS_SIZE ?= db-s-1vcpu-1gb
-DO_REDIS_NODES ?= 2
+DO_REDIS_NODES ?= 1
 
 # Production Secret (stored in cluster; not committed)
 PROD_SECRET_NAME ?= $(HELM_RELEASE)-prod-secrets
