@@ -1,4 +1,4 @@
-.PHONY: help dev build clean logs deploy doks-setup doks-setup-dev doks-setup-prod doks-push doks-deploy doks-deploy-dev doks-deploy-prod doks-status doks-loadtest doks-reset doks-teardown destroy
+.PHONY: help dev build clean logs deploy doks-setup doks-setup-dev doks-setup-prod doks-secret-prod doks-push doks-deploy doks-deploy-dev doks-deploy-prod doks-status doks-loadtest doks-reset doks-teardown destroy
 
 .DEFAULT_GOAL := help
 
@@ -39,6 +39,10 @@ PROD_SECRET_NAME ?= $(HELM_RELEASE)-prod-secrets
 PROD_JWT_SECRET ?=
 PROD_DATABASE_URL ?=
 PROD_REDIS_URL ?=
+
+# Local cache of managed connection strings (used to create/update the K8s Secret)
+PROD_CACHE_DIR ?= .doks
+PROD_CACHE_FILE ?= $(PROD_CACHE_DIR)/prod-connection-urls.env
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -118,54 +122,58 @@ doks-setup-dev: ## Create DOKS cluster and container registry (dev)
 
 doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and persist URLs in a K8s Secret
 	@$(MAKE) doks-setup-dev
-	@# If prod secret already exists, skip resolving connection strings again.
-	@if kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1; then \
-		echo "Prod secret $(PROD_SECRET_NAME) already exists in namespace $(K8S_NAMESPACE); skipping managed DB/Redis URI resolution."; \
-		exit 0; \
-	fi
 	@echo ""
 	@echo "Creating managed PostgreSQL/Valkey and extracting URIs..."
-	@PG_URI=""; REDIS_URI=""; \
-	for attempt in 1 2; do \
-		echo "Managed services attempt $$attempt..."; \
-		PG_URI=$$(doctl databases create $(DO_DB_PG_NAME) \
-			--engine pg \
-			--region $(DO_DB_REGION) \
-			--size $(DO_PG_SIZE) \
-			--num-nodes $(DO_PG_NODES) \
-			--wait 2>&1 | grep -oE 'postgresql://[^[:space:]]+' | head -n 1); \
-		REDIS_URI=$$(doctl databases create $(DO_DB_REDIS_NAME) \
-			--engine valkey \
-			--region $(DO_DB_REGION) \
-			--size $(DO_REDIS_SIZE) \
-			--num-nodes $(DO_REDIS_NODES) \
-			--wait 2>&1 | grep -oE '(rediss|redis)://[^[:space:]]+' | head -n 1); \
-		if [ -n "$$PG_URI" ] && [ -n "$$REDIS_URI" ]; then \
-			break; \
-		fi; \
-		if [ "$$attempt" = "1" ]; then \
-			echo "Could not extract URIs from doctl create output (likely clusters already exist)."; \
-			echo "Recreating managed clusters once to force URI output..."; \
-			doctl databases delete $(DO_DB_PG_NAME) -f 2>/dev/null || true; \
-			doctl databases delete $(DO_DB_REDIS_NAME) -f 2>/dev/null || true; \
-		fi; \
-	done; \
+	@CACHED_PG=""; CACHED_REDIS=""; \
+	if [ -f "$(PROD_CACHE_FILE)" ]; then \
+		CACHED_PG=$$(sed -n 's/^PROD_DATABASE_URL=//p' "$(PROD_CACHE_FILE)" | head -n 1 || true); \
+		CACHED_REDIS=$$(sed -n 's/^PROD_REDIS_URL=//p' "$(PROD_CACHE_FILE)" | head -n 1 || true); \
+	fi; \
+	PG_URI=$$(doctl databases create $(DO_DB_PG_NAME) \
+		--engine pg \
+		--region $(DO_DB_REGION) \
+		--size $(DO_PG_SIZE) \
+		--num-nodes $(DO_PG_NODES) \
+		--wait 2>&1 | grep -oE 'postgresql://[^[:space:]]+' | head -n 1 || true); \
+	REDIS_URI=$$(doctl databases create $(DO_DB_REDIS_NAME) \
+		--engine valkey \
+		--region $(DO_DB_REGION) \
+		--size $(DO_REDIS_SIZE) \
+		--num-nodes $(DO_REDIS_NODES) \
+		--wait 2>&1 | grep -oE '(rediss|redis)://[^[:space:]]+' | head -n 1 || true); \
+	if [ -z "$$PG_URI" ]; then PG_URI="$$CACHED_PG"; fi; \
+	if [ -z "$$REDIS_URI" ]; then REDIS_URI="$$CACHED_REDIS"; fi; \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
-		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
-			PG_URI="$(PROD_DATABASE_URL)"; \
-			REDIS_URI="$(PROD_REDIS_URL)"; \
-		else \
-			echo "Error: could not extract managed connection URIs from doctl."; \
-			echo "If this keeps failing, your DO token likely cannot delete/recreate managed clusters."; \
-			echo "As a fallback you can provide:"; \
-			echo "  make doks-setup ENV=prod PROD_DATABASE_URL=\"...\" PROD_REDIS_URL=\"...\""; \
-			exit 1; \
-		fi; \
+		echo "Warning: could not extract managed URIs from doctl output and cache was missing."; \
+		echo "Run doks-setup ENV=prod when the managed clusters are first created, or provide:"; \
+		echo "  make doks-setup ENV=prod PROD_DATABASE_URL=\"...\" PROD_REDIS_URL=\"...\""; \
+		exit 0; \
+	fi; \
+	mkdir -p $(PROD_CACHE_DIR); \
+	echo "Writing managed connection URLs cache to $(PROD_CACHE_FILE)..."; \
+	echo "PROD_DATABASE_URL=$$PG_URI" > $(PROD_CACHE_FILE); \
+	echo "PROD_REDIS_URL=$$REDIS_URI" >> $(PROD_CACHE_FILE); \
+	echo "Cache ready."
+	@echo ""
+	@echo "Prod managed DB/Valkey provision step complete."
+	@echo "Next: make doks-secret-prod ENV=prod (or make doks-deploy ENV=prod)"
+
+doks-secret-prod: ## Create/update prod K8s Secret from cached managed URIs
+	@if [ ! -f "$(PROD_CACHE_FILE)" ]; then \
+		echo "Error: cache file not found: $(PROD_CACHE_FILE)"; \
+		echo "Run: make doks-setup ENV=prod first (while URIs are printed)"; \
+		exit 1; \
+	fi
+	@PROD_DATABASE_URL=$$(sed -n 's/^PROD_DATABASE_URL=//p' "$(PROD_CACHE_FILE)" | head -n 1); \
+	PROD_REDIS_URL=$$(sed -n 's/^PROD_REDIS_URL=//p' "$(PROD_CACHE_FILE)" | head -n 1); \
+	if [ -z "$$PROD_DATABASE_URL" ] || [ -z "$$PROD_REDIS_URL" ]; then \
+		echo "Error: cache file missing PROD_DATABASE_URL / PROD_REDIS_URL."; \
+		exit 1; \
 	fi; \
 	JWT_SECRET="$(PROD_JWT_SECRET)"; \
 	if [ -z "$$JWT_SECRET" ]; then \
 		JWT_SECRET=$$(openssl rand -base64 32); \
-		echo "Generated PROD JWT secret (stored in K8s Secret)."; \
+		echo "Generated PROD JWT secret."; \
 	fi; \
 	LOAD_TEST_KEY=$$(openssl rand -base64 16); \
 	echo "Creating/updating K8s Secret $(PROD_SECRET_NAME) in namespace $(K8S_NAMESPACE)..."; \
@@ -173,12 +181,9 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 	kubectl delete secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) 2>/dev/null || true; \
 	kubectl create secret generic -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) \
 		--from-literal=JWT_SECRET="$$JWT_SECRET" \
-		--from-literal=DATABASE_URL="$$PG_URI" \
-		--from-literal=REDIS_URL="$$REDIS_URI" \
+		--from-literal=DATABASE_URL="$$PROD_DATABASE_URL" \
+		--from-literal=REDIS_URL="$$PROD_REDIS_URL" \
 		--from-literal=LOAD_TEST_KEY="$$LOAD_TEST_KEY"
-	@echo ""
-	@echo "Prod resources ready."
-	@echo "Next: make doks-deploy ENV=prod"
 
 doks-push: ## Build and push images to DigitalOcean Container Registry
 	@echo "Logging into registry..."
@@ -218,6 +223,11 @@ doks-deploy-dev: ## Deploy to DOKS via Helm (dev)
 
 doks-deploy-prod: ## Deploy to DOKS via Helm (prod values; prefer managed DB/Redis, fall back to in-cluster)
 	@HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
+	if [ "$$HAS_PROD_SECRET" = "0" ]; then \
+		echo "Prod Secret missing; attempting to create from cache..."; \
+		$(MAKE) doks-secret-prod ENV=prod || true; \
+		HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
+	fi; \
 	echo "Prod Secret present: $$HAS_PROD_SECRET";
 	@echo "Creating namespace $(K8S_NAMESPACE)..."
 	kubectl create namespace $(K8S_NAMESPACE) 2>/dev/null || true

@@ -6,3 +6,4 @@ data/*.json
 *.log
 .idea/
 coverage/
+.doks/
