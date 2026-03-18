@@ -130,13 +130,13 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 		--region $(DO_DB_REGION) \
 		--size $(DO_PG_SIZE) \
 		--num-nodes $(DO_PG_NODES) \
-		--wait 2>&1 | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r\"postgresql://\\S+\", s); print(m.group(0) if m else \"\", end=\"\")' ) ; \
+		--wait 2>&1 | grep -oE 'postgresql://[^[:space:]]+' | head -n 1 ); \
 	REDIS_URI=$$(doctl databases create $(DO_DB_REDIS_NAME) \
 		--engine valkey \
 		--region $(DO_DB_REGION) \
 		--size $(DO_REDIS_SIZE) \
 		--num-nodes $(DO_REDIS_NODES) \
-		--wait 2>&1 | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r\"(rediss|redis)://\\S+\", s); print(m.group(0) if m else \"\", end=\"\")' ) ; \
+		--wait 2>&1 | grep -oE '(rediss|redis)://[^[:space:]]+' | head -n 1 ); \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
 		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
 			PG_URI="$(PROD_DATABASE_URL)"; \
