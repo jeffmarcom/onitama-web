@@ -316,7 +316,7 @@ doks-teardown-dev: ## Alias: make doks-teardown ENV=dev (ENV not needed here)
 	@echo "Deleting cluster $(DO_CLUSTER_NAME)..."
 	-doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force 2>/dev/null || true
 	@echo "Deleting registry $(DO_REGISTRY)..."
-	-doctl registry delete --force 2>/dev/null || true
+	-doctl registry delete $(DO_REGISTRY) --force 2>/dev/null || true
 	@echo ""
 	@echo "Teardown complete. All cloud resources removed."
 
@@ -330,13 +330,23 @@ doks-teardown-prod: ## Alias: make doks-teardown ENV=prod (ENV not needed here)
 	@echo "Deleting K8s Secret $(PROD_SECRET_NAME) (if present)..."
 	-kubectl delete secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) --ignore-not-found=true
 	@echo "Deleting managed PostgreSQL $(DO_DB_PG_NAME)..."
-	-doctl databases delete $(DO_DB_PG_NAME) --force
+	@PG_ID=$$(doctl databases list --format ID,Name --no-header 2>/dev/null | awk '$$2=="$(DO_DB_PG_NAME)"{print $$1; exit}'); \
+	if [ -n "$$PG_ID" ]; then \
+		doctl databases delete $$PG_ID --force; \
+	else \
+		echo "Managed PostgreSQL $(DO_DB_PG_NAME) not found (by name); skipping."; \
+	fi
 	@echo "Deleting managed Redis $(DO_DB_REDIS_NAME)..."
-	-doctl databases delete $(DO_DB_REDIS_NAME) --force
+	@REDIS_ID=$$(doctl databases list --format ID,Name --no-header 2>/dev/null | awk '$$2=="$(DO_DB_REDIS_NAME)"{print $$1; exit}'); \
+	if [ -n "$$REDIS_ID" ]; then \
+		doctl databases delete $$REDIS_ID --force; \
+	else \
+		echo "Managed Redis/Valkey $(DO_DB_REDIS_NAME) not found (by name); skipping."; \
+	fi
 	@echo "Deleting cluster $(DO_CLUSTER_NAME)..."
 	-doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force
 	@echo "Deleting registry $(DO_REGISTRY)..."
-	-doctl registry delete --force
+	-doctl registry delete $(DO_REGISTRY) --force
 	@echo ""
 	@echo "Teardown complete. All cloud resources removed."
 
