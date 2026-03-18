@@ -124,28 +124,25 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 		exit 0; \
 	fi
 	@echo ""
-	@echo "Creating managed PostgreSQL: $(DO_DB_PG_NAME) (region=$(DO_DB_REGION), size=$(DO_PG_SIZE), nodes=$(DO_PG_NODES))..."
-	doctl databases create $(DO_DB_PG_NAME) --engine pg --region $(DO_DB_REGION) --size $(DO_PG_SIZE) --num-nodes $(DO_PG_NODES) --wait || true
-	@echo "Creating managed Redis: $(DO_DB_REDIS_NAME) (region=$(DO_DB_REGION), size=$(DO_REDIS_SIZE), nodes=$(DO_REDIS_NODES))..."
-	doctl databases create $(DO_DB_REDIS_NAME) --engine valkey --region $(DO_DB_REGION) --size $(DO_REDIS_SIZE) --num-nodes $(DO_REDIS_NODES) --wait || true
-	@echo ""
-	@echo "Fetching connection strings..."
-	@PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --format URI --no-header || true); \
-	REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --format URI --no-header || true); \
-	# If public connection strings aren't accessible, try VPC/private connections.
-	if [ -z "$$PG_URI" ]; then \
-		PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --private --format URI --no-header || true); \
-	fi; \
-	if [ -z "$$REDIS_URI" ]; then \
-		REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --private --format URI --no-header || true); \
-	fi; \
+	@echo "Creating managed PostgreSQL/Valkey and extracting URIs..."
+	@PG_URI=$$(doctl databases create $(DO_DB_PG_NAME) \
+		--engine pg \
+		--region $(DO_DB_REGION) \
+		--size $(DO_PG_SIZE) \
+		--num-nodes $(DO_PG_NODES) \
+		--wait 2>&1 | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r\"postgresql://\\S+\", s); print(m.group(0) if m else \"\", end=\"\")' ) ; \
+	REDIS_URI=$$(doctl databases create $(DO_DB_REDIS_NAME) \
+		--engine valkey \
+		--region $(DO_DB_REGION) \
+		--size $(DO_REDIS_SIZE) \
+		--num-nodes $(DO_REDIS_NODES) \
+		--wait 2>&1 | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r\"(rediss|redis)://\\S+\", s); print(m.group(0) if m else \"\", end=\"\")' ) ; \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
 		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
 			PG_URI="$(PROD_DATABASE_URL)"; \
 			REDIS_URI="$(PROD_REDIS_URL)"; \
 		else \
-			echo "Error: could not fetch managed connection URIs via doctl."; \
-			echo "Tried: doctl databases connection <name> and --private."; \
+			echo "Error: could not extract managed connection URIs from doctl create output."; \
 			echo "Provide them explicitly to proceed:"; \
 			echo "  make doks-setup ENV=prod PROD_DATABASE_URL=\"...\" PROD_REDIS_URL=\"...\""; \
 			echo "Skipping prod Secret creation; doks-deploy ENV=prod will fall back to in-cluster DB/Redis."; \
