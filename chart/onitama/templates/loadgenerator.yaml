@@ -1,0 +1,47 @@
+{{- if .Values.loadgenerator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "onitama.fullname" . }}-loadgenerator
+  labels:
+    {{- include "onitama.labels" . | nindent 4 }}
+    app.kubernetes.io/component: loadgenerator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: onitama-loadgenerator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: onitama-loadgenerator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: loadgenerator
+          image: "{{ .Values.loadgenerator.image.repository }}:{{ .Values.loadgenerator.image.tag }}"
+          imagePullPolicy: Always
+          env:
+            - name: TARGET_URL
+              value: "http://{{ include "onitama.fullname" . }}:{{ .Values.service.port }}"
+            - name: CONCURRENT_USERS
+              value: {{ .Values.loadgenerator.concurrentUsers | quote }}
+            - name: RAMP_UP_SECONDS
+              value: {{ .Values.loadgenerator.rampUpSeconds | quote }}
+            - name: CYCLE_DELAY_MS
+              value: {{ .Values.loadgenerator.cycleDelayMs | quote }}
+            - name: ENABLE_WEBSOCKETS
+              value: {{ .Values.loadgenerator.enableWebsockets | quote }}
+            - name: LOAD_TEST_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "onitama.fullname" . }}-secrets
+                  key: LOAD_TEST_KEY
+          resources:
+            {{- toYaml .Values.loadgenerator.resources | nindent 12 }}
+{{- end }}

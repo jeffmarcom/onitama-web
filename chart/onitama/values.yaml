@@ -1,0 +1,90 @@
+# ── App Deployment ────────────────────────────────────────────────────────────
+image:
+  repository: registry.digitalocean.com/onitama/onitama
+  tag: web
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: registry-onitama
+
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 192Mi
+  limits:
+    cpu: "1"
+    memory: 384Mi
+
+# ── Service / Load Balancer ──────────────────────────────────────────────────
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 3000
+
+# ── Autoscaling ──────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 50
+  scaleDownStabilizationSeconds: 300
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# These will be base64-encoded in the Secret manifest.
+# Override via --set or a separate values file for real deployments.
+secrets:
+  jwtSecret: "change-me-in-production"
+  loadTestKey: "change-me-in-production"
+
+# ── PostgreSQL (in-cluster) ──────────────────────────────────────────────────
+# Set postgresql.internal=false and provide secrets.databaseUrl for managed DB.
+postgresql:
+  internal: true
+  image: postgres:16-alpine
+  database: onitama
+  user: onitama
+  password: onitama
+  storage: 1Gi
+  storageClass: do-block-storage
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# ── Redis (in-cluster) ──────────────────────────────────────────────────────
+# Set redis.internal=false and provide secrets.redisUrl for managed Redis.
+redis:
+  internal: true
+  image: redis:7-alpine
+  maxmemory: 64mb
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 96Mi
+
+# ── Load Generator ──────────────────────────────────────────────────────────
+# Disabled by default. Enable to simulate traffic and trigger autoscaling.
+loadgenerator:
+  enabled: false
+  image:
+    repository: registry.digitalocean.com/onitama/onitama
+    tag: loadgen
+  concurrentUsers: 20
+  rampUpSeconds: 60
+  cycleDelayMs: 2000
+  enableWebsockets: "true"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

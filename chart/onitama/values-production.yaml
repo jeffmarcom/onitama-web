@@ -1,0 +1,37 @@
+# ── Production overrides ─────────────────────────────────────────────────────
+# Usage: helm upgrade onitama ./chart/onitama -f chart/onitama/values-production.yaml
+#
+# Uses DigitalOcean Managed Database and Managed Redis for HA, automated
+# backups, and failover instead of in-cluster instances.
+
+replicaCount: 3
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+  scaleDownStabilizationSeconds: 600
+
+# ── Managed Database (DigitalOcean Managed PostgreSQL) ───────────────────────
+postgresql:
+  internal: false
+  # Provide via --set secrets.databaseUrl=<connection-string>
+
+# ── Managed Redis (DigitalOcean Managed Redis) ──────────────────────────────
+redis:
+  internal: false
+  # Provide via --set secrets.redisUrl=<connection-string>
+
+secrets:
+  jwtSecret: ""     # Must be set via --set secrets.jwtSecret=<value>
+  databaseUrl: ""   # Must be set via --set secrets.databaseUrl=<value>
+  redisUrl: ""      # Must be set via --set secrets.redisUrl=<value>
