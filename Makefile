@@ -170,6 +170,9 @@ doks-secret-prod: ## Create/update prod K8s Secret from cached managed URIs
 		echo "Error: cache file missing PROD_DATABASE_URL / PROD_REDIS_URL."; \
 		exit 1; \
 	fi; \
+	# Validate URL formats so we fail fast instead of deploying with broken endpoints.
+	echo \"$$PROD_DATABASE_URL\" | rg -q '^postgresql://' || { echo 'Error: cached PROD_DATABASE_URL is not a postgresql:// URI'; exit 1; }; \
+	echo \"$$PROD_REDIS_URL\" | rg -q '^(redis|rediss)://' || { echo 'Error: cached PROD_REDIS_URL is not a redis:// or rediss:// URI'; exit 1; }; \
 	JWT_SECRET="$(PROD_JWT_SECRET)"; \
 	if [ -z "$$JWT_SECRET" ]; then \
 		JWT_SECRET=$$(openssl rand -base64 32); \
@@ -225,7 +228,7 @@ doks-deploy-prod: ## Deploy to DOKS via Helm (prod values; prefer managed DB/Red
 	@HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
 	if [ "$$HAS_PROD_SECRET" = "0" ]; then \
 		echo "Prod Secret missing; attempting to create from cache..."; \
-		$(MAKE) doks-secret-prod ENV=prod || true; \
+		$(MAKE) doks-secret-prod; \
 		HAS_PROD_SECRET=$$(kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1 && echo 1 || echo 0); \
 	fi; \
 	echo "Prod Secret present: $$HAS_PROD_SECRET";
