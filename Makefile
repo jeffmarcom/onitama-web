@@ -1,4 +1,4 @@
-.PHONY: help dev build clean logs deploy doks-setup doks-push doks-deploy doks-status doks-loadtest doks-reset doks-teardown destroy
+.PHONY: help dev build clean logs deploy doks-setup doks-push doks-deploy doks-deploy-prod doks-status doks-loadtest doks-reset doks-teardown destroy
 
 .DEFAULT_GOAL := help
 
@@ -21,6 +21,11 @@ DO_NODE_COUNT ?= 2
 DO_NODE_MAX ?= 4
 HELM_RELEASE ?= onitama
 K8S_NAMESPACE ?= onitama
+
+# Managed services (production) — provide via env or `make VAR=...`
+PROD_DATABASE_URL ?=
+PROD_REDIS_URL ?=
+PROD_JWT_SECRET ?=
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -122,6 +127,42 @@ doks-deploy: ## Deploy to DOKS via Helm
 		--wait --timeout 5m
 	@echo ""
 	@echo "Deployment complete!"
+	@echo "Waiting for Load Balancer IP..."
+	@kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null; echo ""
+	@echo "App available at: http://$$(kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+
+doks-deploy-prod: ## Deploy to DOKS via Helm (production values + managed DB/Redis)
+	@if [ -z "$(PROD_DATABASE_URL)" ]; then \
+		echo "Error: PROD_DATABASE_URL is not set (managed Postgres connection string)."; \
+		exit 1; \
+	fi
+	@if [ -z "$(PROD_REDIS_URL)" ]; then \
+		echo "Error: PROD_REDIS_URL is not set (managed Redis connection string)."; \
+		exit 1; \
+	fi
+	@if [ -z "$(PROD_JWT_SECRET)" ]; then \
+		echo "Error: PROD_JWT_SECRET is not set (JWT signing secret)."; \
+		exit 1; \
+	fi
+	@echo "Creating namespace $(K8S_NAMESPACE)..."
+	kubectl create namespace $(K8S_NAMESPACE) 2>/dev/null || true
+	@echo "Copying registry credentials to namespace..."
+	doctl registry kubernetes-manifest | sed 's/namespace: kube-system/namespace: $(K8S_NAMESPACE)/' | kubectl apply -n $(K8S_NAMESPACE) -f -
+	@echo "Deploying with Helm (production values)..."
+	helm upgrade --install $(HELM_RELEASE) ./chart/onitama \
+		--namespace $(K8S_NAMESPACE) \
+		-f ./chart/onitama/values-production.yaml \
+		--set secrets.jwtSecret="$(PROD_JWT_SECRET)" \
+		--set secrets.databaseUrl="$(PROD_DATABASE_URL)" \
+		--set secrets.redisUrl="$(PROD_REDIS_URL)" \
+		--set secrets.loadTestKey=$$(openssl rand -base64 16) \
+		--set image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
+		--set image.tag=web \
+		--set loadgenerator.image.repository=registry.digitalocean.com/$(DO_REGISTRY)/onitama \
+		--set loadgenerator.image.tag=loadgen \
+		--wait --timeout 7m
+	@echo ""
+	@echo "Production deployment complete!"
 	@echo "Waiting for Load Balancer IP..."
 	@kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null; echo ""
 	@echo "App available at: http://$$(kubectl get svc -n $(K8S_NAMESPACE) onitama -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
