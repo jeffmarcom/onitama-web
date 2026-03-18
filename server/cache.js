@@ -1,6 +1,17 @@
 import Redis from 'ioredis';
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+function normalizeRedisUrl(url) {
+  if (!url) return url;
+
+  // DigitalOcean Managed Valkey uses a Redis-compatible protocol but may provide a `valkey://` URI.
+  // `ioredis` expects `redis://` or `rediss://`, so normalize the scheme.
+  return url
+    .replace(/^valkey\+ssl:\/\//i, 'rediss://')
+    .replace(/^valkey:\/\//i, 'redis://');
+}
+
+// Prefer REDIS_URL for backward compatibility; allow VALKEY_URL for Managed Valkey deployments.
+const REDIS_URL = normalizeRedisUrl(process.env.REDIS_URL || process.env.VALKEY_URL || 'redis://localhost:6379');
 
 // Main client for caching
 const redis = new Redis(REDIS_URL, {
