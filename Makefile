@@ -121,17 +121,22 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 	-doctl databases create $(DO_DB_REDIS_NAME) --engine redis --region $(DO_DB_REGION) --size $(DO_REDIS_SIZE) --num-nodes $(DO_REDIS_NODES) --wait 2>/dev/null || true
 	@echo ""
 	@echo "Fetching connection strings..."
-	@PG_ID=$$(doctl databases list --format Name,ID --no-header | awk '$$1=="$(DO_DB_PG_NAME)" {print $$2}'); \
-	REDIS_ID=$$(doctl databases list --format Name,ID --no-header | awk '$$1=="$(DO_DB_REDIS_NAME)" {print $$2}'); \
-	if [ -z "$$PG_ID" ] || [ -z "$$REDIS_ID" ]; then \
-		echo "Error: could not resolve database IDs (check doctl auth and database names)."; \
-		exit 1; \
-	fi; \
-	PG_URI=$$(doctl databases connection $$PG_ID --format URI --no-header); \
-	REDIS_URI=$$(doctl databases connection $$REDIS_ID --format URI --no-header); \
+	@PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --format URI --no-header 2>/dev/null || true); \
+	REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --format URI --no-header 2>/dev/null || true); \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
-		echo "Error: could not fetch connection URIs."; \
-		exit 1; \
+		echo "Connection by name failed; resolving IDs via JSON list..."; \
+		PG_ID=$$(doctl databases list --output json 2>/dev/null | python3 -c 'import sys,json; j=json.load(sys.stdin); target=sys.argv[1]; keys=[\"database_clusters\",\"databases\",\"clusters\",\"items\",\"data\"]; arr=next((j[k] for k in keys if isinstance(j,dict) and isinstance(j.get(k),list)), None); arr=j if arr is None and isinstance(j,list) else arr; m=next((x for x in (arr or []) if x.get(\"name\")==target or x.get(\"slug\")==target), None); print((m or {}).get(\"id\",\"\"), end=\"\")' "$(DO_DB_PG_NAME)"); \
+		REDIS_ID=$$(doctl databases list --output json 2>/dev/null | python3 -c 'import sys,json; j=json.load(sys.stdin); target=sys.argv[1]; keys=[\"database_clusters\",\"databases\",\"clusters\",\"items\",\"data\"]; arr=next((j[k] for k in keys if isinstance(j,dict) and isinstance(j.get(k),list)), None); arr=j if arr is None and isinstance(j,list) else arr; m=next((x for x in (arr or []) if x.get(\"name\")==target or x.get(\"slug\")==target), None); print((m or {}).get(\"id\",\"\"), end=\"\")' "$(DO_DB_REDIS_NAME)"); \
+		if [ -z "$$PG_ID" ] || [ -z "$$REDIS_ID" ]; then \
+			echo "Error: could not resolve managed database IDs (check doctl auth and database names)."; \
+			exit 1; \
+		fi; \
+		PG_URI=$$(doctl databases connection $$PG_ID --format URI --no-header); \
+		REDIS_URI=$$(doctl databases connection $$REDIS_ID --format URI --no-header); \
+		if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
+			echo "Error: could not fetch connection URIs."; \
+			exit 1; \
+		fi; \
 	fi; \
 	JWT_SECRET="$(PROD_JWT_SECRET)"; \
 	if [ -z "$$JWT_SECRET" ]; then \
