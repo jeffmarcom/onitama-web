@@ -246,9 +246,28 @@ doks-reset: ## Disable load generator and reset scaling to defaults
 	@echo ""
 	@echo "Load generator disabled. Pods will scale down after stabilization window (5m)."
 
-doks-teardown: ## Delete DOKS cluster and registry to stop billing
+doks-teardown: ## Teardown DOKS resources (ENV=dev|prod)
+	@$(MAKE) doks-teardown-$(ENV)
+
+doks-teardown-dev: ## Delete DOKS cluster and registry to stop billing (dev)
 	@echo "Uninstalling Helm release..."
 	-helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE) 2>/dev/null || true
+	@echo "Deleting cluster $(DO_CLUSTER_NAME)..."
+	-doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force 2>/dev/null || true
+	@echo "Deleting registry $(DO_REGISTRY)..."
+	-doctl registry delete --force 2>/dev/null || true
+	@echo ""
+	@echo "Teardown complete. All cloud resources removed."
+
+doks-teardown-prod: ## Delete DOKS cluster/registry AND managed databases (prod)
+	@echo "Uninstalling Helm release..."
+	-helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE) 2>/dev/null || true
+	@echo "Deleting K8s Secret $(PROD_SECRET_NAME) (if present)..."
+	-kubectl delete secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) 2>/dev/null || true
+	@echo "Deleting managed PostgreSQL $(DO_DB_PG_NAME)..."
+	-doctl databases delete $(DO_DB_PG_NAME) --force 2>/dev/null || true
+	@echo "Deleting managed Redis $(DO_DB_REDIS_NAME)..."
+	-doctl databases delete $(DO_DB_REDIS_NAME) --force 2>/dev/null || true
 	@echo "Deleting cluster $(DO_CLUSTER_NAME)..."
 	-doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force 2>/dev/null || true
 	@echo "Deleting registry $(DO_REGISTRY)..."
