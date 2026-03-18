@@ -330,13 +330,13 @@ doks-teardown-prod: ## Alias: make doks-teardown ENV=prod (ENV not needed here)
 	@echo "Deleting K8s Secret $(PROD_SECRET_NAME) (if present)..."
 	-kubectl delete secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) --ignore-not-found=true
 	@echo "Deleting managed PostgreSQL $(DO_DB_PG_NAME)..."
-	doctl databases delete $(DO_DB_PG_NAME) --force
+	-doctl databases delete $(DO_DB_PG_NAME) --force
 	@echo "Deleting managed Redis $(DO_DB_REDIS_NAME)..."
-	doctl databases delete $(DO_DB_REDIS_NAME) --force
+	-doctl databases delete $(DO_DB_REDIS_NAME) --force
 	@echo "Deleting cluster $(DO_CLUSTER_NAME)..."
-	doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force
+	-doctl kubernetes cluster delete $(DO_CLUSTER_NAME) --force
 	@echo "Deleting registry $(DO_REGISTRY)..."
-	doctl registry delete --force
+	-doctl registry delete --force
 	@echo ""
 	@echo "Teardown complete. All cloud resources removed."
 
