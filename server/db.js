@@ -10,17 +10,23 @@ function buildPgPoolConfig() {
     connectionString: DATABASE_URL,
   };
 
-  // DigitalOcean Managed PostgreSQL commonly uses self-signed certs in the chain.
-  // When DATABASE_URL includes `sslmode=...`, `pg` still requires an explicit `ssl` option.
-  // For a "take-home" / demo, we allow disabling cert verification via env.
-  if (DATABASE_URL && /sslmode=/.test(DATABASE_URL)) {
-    const rejectUnauthorizedEnv = process.env.PG_SSL_REJECT_UNAUTHORIZED;
-    const rejectUnauthorized =
-      rejectUnauthorizedEnv === undefined
-        ? false // default: make managed DB work out of the box
-        : rejectUnauthorizedEnv.toLowerCase() === 'true';
+  // DigitalOcean Managed PostgreSQL uses TLS and can present a chain that `node-postgres`
+  // treats as self-signed unless you provide a CA bundle. For this take-home, default
+  // to not rejecting unauthorized certs when SSL is clearly intended.
+  //
+  // Override by setting:
+  //   PG_SSL_REJECT_UNAUTHORIZED=true  (strict verification)
+  //   PG_SSL_REJECT_UNAUTHORIZED=false (allow self-signed chain)
+  if (DATABASE_URL) {
+    const sslLikely =
+      /sslmode=/.test(DATABASE_URL) ||
+      /(\.|-)k\.db\.ondigitalocean\.com\b/.test(DATABASE_URL);
 
-    config.ssl = rejectUnauthorized ? undefined : { rejectUnauthorized };
+    if (sslLikely) {
+      const env = process.env.PG_SSL_REJECT_UNAUTHORIZED;
+      const rejectUnauthorized = env ? env.toLowerCase() === 'true' : false;
+      config.ssl = { rejectUnauthorized };
+    }
   }
 
   return config;
