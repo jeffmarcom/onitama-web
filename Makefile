@@ -106,7 +106,7 @@ doks-setup-dev: ## Create DOKS cluster and container registry (dev)
 	-doctl kubernetes cluster create $(DO_CLUSTER_NAME) \
 		--region $(DO_REGION) \
 		--auto-upgrade \
-		--node-pool "name=default;size=$(DO_NODE_SIZE);count=$(DO_NODE_COUNT);auto-scale=true;min-nodes=$(DO_NODE_COUNT);max-nodes=$(DO_NODE_MAX)"
+		--node-pool "name=default;size=$(DO_NODE_SIZE);count=$(DO_NODE_COUNT);auto-scale=true;min-nodes=$(DO_NODE_COUNT);max-nodes=$(DO_NODE_MAX)" 2>/dev/null || true
 	@echo "Saving kubeconfig for $(DO_CLUSTER_NAME)..."
 	doctl kubernetes cluster kubeconfig save $(DO_CLUSTER_NAME) --set-current-context
 	@echo "Connecting registry to cluster..."
@@ -118,6 +118,11 @@ doks-setup-dev: ## Create DOKS cluster and container registry (dev)
 
 doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and persist URLs in a K8s Secret
 	@$(MAKE) doks-setup-dev
+	@# If prod secret already exists, skip resolving connection strings again.
+	@if kubectl get secret -n $(K8S_NAMESPACE) $(PROD_SECRET_NAME) >/dev/null 2>&1; then \
+		echo "Prod secret $(PROD_SECRET_NAME) already exists in namespace $(K8S_NAMESPACE); skipping managed DB/Redis URI resolution."; \
+		exit 0; \
+	fi
 	@echo ""
 	@echo "Creating managed PostgreSQL: $(DO_DB_PG_NAME) (region=$(DO_DB_REGION), size=$(DO_PG_SIZE), nodes=$(DO_PG_NODES))..."
 	-doctl databases create $(DO_DB_PG_NAME) --engine pg --region $(DO_DB_REGION) --size $(DO_PG_SIZE) --num-nodes $(DO_PG_NODES) --wait 2>/dev/null || true
@@ -127,12 +132,20 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 	@echo "Fetching connection strings..."
 	@PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --format URI --no-header 2>/dev/null || true); \
 	REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --format URI --no-header 2>/dev/null || true); \
+	# If public connection strings aren't accessible, try VPC/private connections.
+	if [ -z "$$PG_URI" ]; then \
+		PG_URI=$$(doctl databases connection "$(DO_DB_PG_NAME)" --private --format URI --no-header 2>/dev/null || true); \
+	fi; \
+	if [ -z "$$REDIS_URI" ]; then \
+		REDIS_URI=$$(doctl databases connection "$(DO_DB_REDIS_NAME)" --private --format URI --no-header 2>/dev/null || true); \
+	fi; \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
 		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
 			PG_URI="$(PROD_DATABASE_URL)"; \
 			REDIS_URI="$(PROD_REDIS_URL)"; \
 		else \
 			echo "Error: could not fetch managed connection URIs via doctl."; \
+			echo "Tried: doctl databases connection <name> and --private."; \
 			echo "Provide them explicitly to proceed:"; \
 			echo "  make doks-setup ENV=prod PROD_DATABASE_URL=\"...\" PROD_REDIS_URL=\"...\""; \
 			exit 1; \
