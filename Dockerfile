@@ -18,7 +18,7 @@ RUN npm run build
 # Production stage
 FROM node:20-alpine
 
-# For HEALTHCHECK
+# wget for HEALTHCHECK, build tools for native modules (bcrypt, pg)
 RUN apk add --no-cache wget=~1.25
 
 WORKDIR /app
@@ -26,15 +26,12 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json* ./
 
-# Install production dependencies only (reproducible from lockfile)
-RUN npm ci --omit=dev
+# Install production dependencies only (reproducible when lockfile present)
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
 # Copy built frontend and server code
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server ./server
-
-# Create data directory
-RUN mkdir -p /app/data
 
 # Expose port
 EXPOSE 3000
