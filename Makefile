@@ -137,6 +137,13 @@ doks-setup-prod: ## Create DOKS cluster/registry + managed Postgres/Redis and pe
 		--size $(DO_REDIS_SIZE) \
 		--num-nodes $(DO_REDIS_NODES) \
 		--wait 2>&1 | grep -oE '(rediss|redis)://[^[:space:]]+' | head -n 1 ); \
+	# If `doctl ... create` output does not include URIs (e.g., already exists), fetch from `doctl databases list`.
+	if [ -z "$$PG_URI" ]; then \
+		PG_URI=$$(doctl databases list --format Name,URI --no-header 2>/dev/null | awk '$$1=="$(DO_DB_PG_NAME)" {print $$2; exit}' || true); \
+	fi; \
+	if [ -z "$$REDIS_URI" ]; then \
+		REDIS_URI=$$(doctl databases list --format Name,URI --no-header 2>/dev/null | awk '$$1=="$(DO_DB_REDIS_NAME)" {print $$2; exit}' || true); \
+	fi; \
 	if [ -z "$$PG_URI" ] || [ -z "$$REDIS_URI" ]; then \
 		if [ -n "$(PROD_DATABASE_URL)" ] && [ -n "$(PROD_REDIS_URL)" ]; then \
 			PG_URI="$(PROD_DATABASE_URL)"; \
