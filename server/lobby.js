@@ -1,181 +1,141 @@
-// Lobby and Matchmaking System
-// Manages player queue and matches players for PvP games
+// Redis-backed Lobby and Matchmaking System
+// All state stored in Redis so matchmaking works across multiple pods.
 
-class Lobby {
-  constructor() {
-    // Queue of players waiting for a match: [{ socketId, username, timestamp }]
-    this.waitingQueue = [];
-    
-    // Active games: Map<gameId, { player1Socket, player2Socket, player1Username, player2Username }>
-    this.activeGames = new Map();
-    
-    // Socket to username mapping: Map<socketId, username>
-    this.socketToUsername = new Map();
+import redis from './cache.js';
+
+const QUEUE_KEY = 'lobby:queue';             // Redis List: waiting players
+const GAMES_KEY = 'lobby:games';             // Redis Hash: gameId -> JSON game info
+const SOCKET_USER_KEY = 'lobby:socket2user'; // Redis Hash: socketId -> username
+
+/**
+ * Add a player to the matchmaking queue.
+ * Uses a Lua script to atomically check-and-pop or push.
+ * @returns {Object|null} Match info if matched, null if waiting
+ */
+async function joinQueue(socketId, username) {
+  await redis.hset(SOCKET_USER_KEY, socketId, username);
+
+  // Atomically: if queue has someone, pop them (match). Otherwise push us.
+  const luaScript = `
+    local queueLen = redis.call('LLEN', KEYS[1])
+    if queueLen > 0 then
+      return redis.call('RPOP', KEYS[1])
+    else
+      redis.call('LPUSH', KEYS[1], ARGV[1])
+      return nil
+    end
+  `;
+
+  const entry = JSON.stringify({ socketId, username, timestamp: Date.now() });
+  const result = await redis.eval(luaScript, 1, QUEUE_KEY, entry);
+
+  if (result) {
+    const opponent = JSON.parse(result);
+    const isPlayer1 = Math.random() < 0.5;
+
+    return {
+      player1SocketId: isPlayer1 ? socketId : opponent.socketId,
+      player2SocketId: isPlayer1 ? opponent.socketId : socketId,
+      player1Username: isPlayer1 ? username : opponent.username,
+      player2Username: isPlayer1 ? opponent.username : username,
+    };
   }
 
-  /**
-   * Add a player to the matchmaking queue
-   * @param {string} socketId - Socket ID of the player
-   * @param {string} username - Username of the player
-   * @returns {Object|null} Match info if matched, null if waiting
-   */
-  joinQueue(socketId, username) {
-    // Check if player is already in queue
-    if (this.waitingQueue.some(p => p.socketId === socketId)) {
-      return null;
-    }
+  return null;
+}
 
-    // Track socket to username mapping
-    this.socketToUsername.set(socketId, username);
+/**
+ * Remove a player from the queue.
+ * @returns {boolean} True if removed
+ */
+async function leaveQueue(socketId) {
+  const entries = await redis.lrange(QUEUE_KEY, 0, -1);
+  let removed = false;
 
-    // If there's someone waiting, match them
-    if (this.waitingQueue.length > 0) {
-      const opponent = this.waitingQueue.shift();
-      
-      // Randomly assign player numbers
-      const isPlayer1 = Math.random() < 0.5;
-      
-      const match = {
-        player1SocketId: isPlayer1 ? socketId : opponent.socketId,
-        player2SocketId: isPlayer1 ? opponent.socketId : socketId,
-        player1Username: isPlayer1 ? username : opponent.username,
-        player2Username: isPlayer1 ? opponent.username : username
-      };
-      
-      return match;
-    }
-
-    // No one waiting, add to queue
-    this.waitingQueue.push({
-      socketId,
-      username,
-      timestamp: Date.now()
-    });
-
-    return null;
-  }
-
-  /**
-   * Remove a player from the queue
-   * @param {string} socketId - Socket ID of the player
-   * @returns {boolean} True if removed, false if not in queue
-   */
-  leaveQueue(socketId) {
-    const index = this.waitingQueue.findIndex(p => p.socketId === socketId);
-    if (index !== -1) {
-      this.waitingQueue.splice(index, 1);
-      this.socketToUsername.delete(socketId);
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Register an active game
-   * @param {string} gameId - Game ID
-   * @param {string} player1SocketId - Player 1's socket ID
-   * @param {string} player2SocketId - Player 2's socket ID
-   * @param {string} player1Username - Player 1's username
-   * @param {string} player2Username - Player 2's username
-   */
-  registerGame(gameId, player1SocketId, player2SocketId, player1Username, player2Username) {
-    this.activeGames.set(gameId, {
-      player1SocketId,
-      player2SocketId,
-      player1Username,
-      player2Username
-    });
-  }
-
-  /**
-   * Get game info by game ID
-   * @param {string} gameId - Game ID
-   * @returns {Object|null} Game info or null
-   */
-  getGame(gameId) {
-    return this.activeGames.get(gameId) || null;
-  }
-
-  /**
-   * Get game ID by socket ID
-   * @param {string} socketId - Socket ID
-   * @returns {string|null} Game ID or null
-   */
-  getGameBySocket(socketId) {
-    for (const [gameId, game] of this.activeGames.entries()) {
-      if (game.player1SocketId === socketId || game.player2SocketId === socketId) {
-        return gameId;
+  for (const entry of entries) {
+    try {
+      const parsed = JSON.parse(entry);
+      if (parsed.socketId === socketId) {
+        await redis.lrem(QUEUE_KEY, 1, entry);
+        removed = true;
       }
+    } catch {
+      // skip malformed entries
     }
-    return null;
   }
 
-  /**
-   * Get opponent socket ID
-   * @param {string} gameId - Game ID
-   * @param {string} socketId - Current player's socket ID
-   * @returns {string|null} Opponent's socket ID or null
-   */
-  getOpponentSocket(gameId, socketId) {
-    const game = this.activeGames.get(gameId);
-    if (!game) return null;
-    
-    if (game.player1SocketId === socketId) {
-      return game.player2SocketId;
-    } else if (game.player2SocketId === socketId) {
-      return game.player1SocketId;
-    }
-    return null;
-  }
+  await redis.hdel(SOCKET_USER_KEY, socketId);
+  return removed;
+}
 
-  /**
-   * Remove a game from active games
-   * @param {string} gameId - Game ID
-   */
-  removeGame(gameId) {
-    this.activeGames.delete(gameId);
-  }
+/**
+ * Register an active game.
+ */
+async function registerGame(gameId, player1SocketId, player2SocketId, player1Username, player2Username) {
+  const gameInfo = JSON.stringify({
+    player1SocketId,
+    player2SocketId,
+    player1Username,
+    player2Username,
+  });
+  await redis.hset(GAMES_KEY, gameId, gameInfo);
+}
 
-  /**
-   * Handle player disconnect
-   * @param {string} socketId - Socket ID of disconnected player
-   * @returns {Object|null} Info about affected game or null
-   */
-  handleDisconnect(socketId) {
-    // Remove from queue if waiting
-    this.leaveQueue(socketId);
+/**
+ * Get game info by game ID.
+ * @returns {Object|null}
+ */
+async function getGame(gameId) {
+  const data = await redis.hget(GAMES_KEY, gameId);
+  return data ? JSON.parse(data) : null;
+}
 
-    // Check if player was in an active game
-    const gameId = this.getGameBySocket(socketId);
-    if (gameId) {
-      const game = this.activeGames.get(gameId);
-      const opponentSocketId = this.getOpponentSocket(gameId, socketId);
-      this.removeGame(gameId);
-      
+/**
+ * Remove a game from active games.
+ */
+async function removeGame(gameId) {
+  await redis.hdel(GAMES_KEY, gameId);
+}
+
+/**
+ * Handle player disconnect.
+ * @returns {Object|null} Info about affected game or null
+ */
+async function handleDisconnect(socketId) {
+  await leaveQueue(socketId);
+
+  const username = await redis.hget(SOCKET_USER_KEY, socketId);
+
+  // Check if player was in an active game
+  const allGames = await redis.hgetall(GAMES_KEY);
+  for (const [gameId, data] of Object.entries(allGames)) {
+    const game = JSON.parse(data);
+    if (game.player1SocketId === socketId || game.player2SocketId === socketId) {
+      const opponentSocketId = game.player1SocketId === socketId
+        ? game.player2SocketId
+        : game.player1SocketId;
+
+      await redis.hdel(GAMES_KEY, gameId);
+      await redis.hdel(SOCKET_USER_KEY, socketId);
+
       return {
         gameId,
         opponentSocketId,
-        disconnectedUsername: this.socketToUsername.get(socketId)
+        disconnectedUsername: username,
       };
     }
-
-    // Clean up socket mapping
-    this.socketToUsername.delete(socketId);
-    
-    return null;
   }
 
-  /**
-   * Get queue status
-   * @returns {Object} Queue information
-   */
-  getQueueStatus() {
-    return {
-      playersWaiting: this.waitingQueue.length,
-      activeGames: this.activeGames.size
-    };
-  }
+  await redis.hdel(SOCKET_USER_KEY, socketId);
+  return null;
 }
 
-// Export singleton instance
-export const lobby = new Lobby();
+// Export with same interface so server/index.js calls stay unchanged
+export const lobby = {
+  joinQueue,
+  leaveQueue,
+  registerGame,
+  getGame,
+  removeGame,
+  handleDisconnect,
+};
