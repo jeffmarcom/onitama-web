@@ -171,8 +171,8 @@ doks-secret-prod: ## Create/update prod K8s Secret from cached managed URIs
 		exit 1; \
 	fi; \
 	# Validate URL formats so we fail fast instead of deploying with broken endpoints.
-	echo \"$$PROD_DATABASE_URL\" | rg -q '^postgresql://' || { echo 'Error: cached PROD_DATABASE_URL is not a postgresql:// URI'; exit 1; }; \
-	echo \"$$PROD_REDIS_URL\" | rg -q '^(redis|rediss)://' || { echo 'Error: cached PROD_REDIS_URL is not a redis:// or rediss:// URI'; exit 1; }; \
+	printf '%s' "$$PROD_DATABASE_URL" | rg -q '^postgresql://' || { echo 'Error: cached PROD_DATABASE_URL is not a postgresql:// URI'; exit 1; }; \
+	printf '%s' "$$PROD_REDIS_URL" | rg -q '^(redis|rediss)://' || { echo 'Error: cached PROD_REDIS_URL is not a redis:// or rediss:// URI'; exit 1; }; \
 	JWT_SECRET="$(PROD_JWT_SECRET)"; \
 	if [ -z "$$JWT_SECRET" ]; then \
 		JWT_SECRET=$$(openssl rand -base64 32); \
