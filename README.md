@@ -25,11 +25,15 @@ Onitama is a two-player perfect information abstract strategy game. Players take
 **Backend:**
 - Express.js server
 - JWT authentication
-- File-based data persistence
+- PostgreSQL for persistent storage
+- Redis for caching and Socket.IO cross-pod pub/sub
 - Rate limiting for API protection
 
 **DevOps:**
 - Docker containerization
+- Helm chart for Kubernetes deployment
+- HorizontalPodAutoscaler (CPU-based)
+- DigitalOcean Kubernetes (DOKS) with Load Balancer
 - Make-based workflow automation
 
 ## Getting Started
@@ -61,7 +65,13 @@ make dev
 - `make build` - Build Docker image
 - `make logs` - View container logs
 - `make clean` - Stop and remove containers/images
-- `make deploy` - Deploy to GCP Cloud Run (publicly accessible)
+- `make deploy` - Deploy to GCP Cloud Run
+- `make doks-setup` - Create DOKS cluster and container registry
+- `make doks-push` - Build and push images to DO registry
+- `make doks-deploy` - Deploy to DOKS via Helm
+- `make doks-status` - Show cluster status
+- `make doks-loadtest` - Enable the load generator
+- `make doks-teardown` - Delete all cloud resources
 
 ## Development
 
@@ -149,49 +159,71 @@ For a detailed tutorial, visit the "How to Play" page in the app.
 
 ## Deployment
 
+### Deploy to DigitalOcean Kubernetes (DOKS)
+
+The recommended deployment path uses a Helm chart on DOKS. See [docs/setup-guide.md](docs/setup-guide.md) for full step-by-step instructions.
+
+**Quick start:**
+
+```bash
+# Prerequisites: doctl, kubectl, helm, docker
+doctl auth init
+make doks-setup    # Create cluster (~5 min)
+make doks-push     # Build and push images
+make doks-deploy   # Deploy via Helm
+make doks-status   # Check pods, services, HPA
+```
+
+The Helm chart deploys:
+- Stateless app pods with HPA (auto-scales 2–8 based on CPU)
+- In-cluster PostgreSQL with persistent storage
+- In-cluster Redis for caching and WebSocket pub/sub
+- DigitalOcean Load Balancer
+
+For production, switch to DigitalOcean Managed Database and Managed Redis:
+
+```bash
+helm upgrade onitama ./chart/onitama \
+  -f chart/onitama/values-production.yaml \
+  --set secrets.databaseUrl="<MANAGED_DB_URL>" \
+  --set secrets.redisUrl="<MANAGED_REDIS_URL>"
+```
+
+**Teardown** (stops all billing):
+
+```bash
+make doks-teardown
+```
+
 ### Deploy to Google Cloud Run
 
-Cloud Run provides a free public URL without needing a custom domain:
-
-1. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install)
-
-2. Authenticate and set up your project:
+Alternatively, deploy to Cloud Run for a simpler serverless setup:
 
 ```bash
 gcloud auth login
 gcloud config set project $GCP_PROJECT
-```
-
-3. Deploy with a single command:
-
-```bash
 make deploy
 ```
 
-This will:
-- Build your Docker image in the cloud
-- Deploy to Cloud Run with a public URL
-- Auto-generate a secure JWT secret
-- Enable public access (no authentication required)
-
-Your app will be available at: `https://onitama-web-xxxxx-uc.a.run.app`
-
-**Note:** Data will reset on each deployment since the app uses file-based storage. For production persistence, integrate Cloud Storage or Cloud SQL.
-
 ## Data Persistence
 
-The application uses file-based storage in the `data/` directory:
-- `data/users.json` - User accounts and authentication
-- `data/games.json` - Active and completed games
-- `data/leaderboard.json` - Player statistics
+The application uses PostgreSQL for persistent storage:
+- `users` table — User accounts and authentication
+- `games` table — Active and completed games (JSONB state)
+- `stats` table — Player win/loss statistics
 
-**Local development:** Data persists in the `data/` directory.
-**Cloud Run:** Data resets on each deployment (ephemeral filesystem).
+Redis is used for:
+- Leaderboard caching (30s TTL)
+- Socket.IO cross-pod pub/sub (enables horizontal scaling of WebSocket connections)
 
-For production persistence, consider:
-- Cloud Storage (GCS) for JSON files
-- Cloud SQL (PostgreSQL) for relational data
-- Firestore for NoSQL document storage
+**DOKS deployment**: Data persists in a PersistentVolumeClaim (DigitalOcean Block Storage).
+**Production**: Use DigitalOcean Managed Database for automated backups and failover.
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — System design, component details, scaling behavior, and Mermaid diagram
+- [Setup Guide](docs/setup-guide.md) — Step-by-step deployment instructions for DOKS
+- [Infrastructure Review](docs/qbr-summary.md) — Cost analysis, scaling recommendations, and risk assessment
 
 ## Contributing
 
