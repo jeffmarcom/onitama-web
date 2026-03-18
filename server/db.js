@@ -3,10 +3,33 @@ import pg from 'pg';
 const { Pool } = pg;
 
 // Support DATABASE_URL (Managed DB / k8s secret) or individual vars
+const DATABASE_URL = process.env.DATABASE_URL;
+
+function buildPgPoolConfig() {
+  const config = {
+    connectionString: DATABASE_URL,
+  };
+
+  // DigitalOcean Managed PostgreSQL commonly uses self-signed certs in the chain.
+  // When DATABASE_URL includes `sslmode=...`, `pg` still requires an explicit `ssl` option.
+  // For a "take-home" / demo, we allow disabling cert verification via env.
+  if (DATABASE_URL && /sslmode=/.test(DATABASE_URL)) {
+    const rejectUnauthorizedEnv = process.env.PG_SSL_REJECT_UNAUTHORIZED;
+    const rejectUnauthorized =
+      rejectUnauthorizedEnv === undefined
+        ? false // default: make managed DB work out of the box
+        : rejectUnauthorizedEnv.toLowerCase() === 'true';
+
+    config.ssl = rejectUnauthorized ? undefined : { rejectUnauthorized };
+  }
+
+  return config;
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  ...buildPgPoolConfig(),
   // Fallback to individual env vars if DATABASE_URL is not set
-  ...(process.env.DATABASE_URL
+  ...(DATABASE_URL
     ? {}
     : {
         host: process.env.PGHOST || 'localhost',
