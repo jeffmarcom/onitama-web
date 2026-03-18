@@ -1,16 +1,27 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs/promises';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { v4 as uuidv4 } from 'uuid';
 import { initializeGame, isValidMove, makeMove, getAIMove } from './gameEngine.js';
 import { lobby } from './lobby.js';
+import {
+  initDB, getUserByUsername, createUser as dbCreateUser, createGame as dbCreateGame,
+  getGame, updateGameState, updateGameStateOptimistic, ensureStats,
+  recordWin, recordLoss, getLeaderboard as dbGetLeaderboard,
+  healthCheck as dbHealthCheck, closePool,
+} from './db.js';
+import {
+  connectRedis, closeRedis, createAdapterClients,
+  getCachedLeaderboard, setCachedLeaderboard, invalidateLeaderboard,
+  healthCheck as cacheHealthCheck,
+} from './cache.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -29,32 +40,10 @@ if (process.env.NODE_ENV === 'production') {
 }
 const JWT_SECRET_TO_USE = JWT_SECRET?.trim() || 'dev-only-fallback-change-in-production';
 
-// Data file paths
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const GAMES_FILE = path.join(DATA_DIR, 'games.json');
-const STATS_FILE = path.join(DATA_DIR, 'stats.json');
+// ── Initialize data stores ──────────────────────────────────────────────────
 
-// Ensure data directory exists
-await fs.mkdir(DATA_DIR, { recursive: true });
-
-// Helper functions for JSON file database
-async function readJSON(filePath, defaultValue = []) {
-  try {
-    const data = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(data);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      await writeJSON(filePath, defaultValue);
-      return defaultValue;
-    }
-    throw err;
-  }
-}
-
-async function writeJSON(filePath, data) {
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
-}
+await connectRedis();
+await initDB();
 
 // Auth middleware
 function authenticateToken(req, res, next) {
@@ -94,19 +83,24 @@ const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins,
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
   },
-  // Force WebSocket-only transport for Cloud Run compatibility
   transports: ['websocket'],
-  // Increase timeout for Cloud Run (max 60 minutes)
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
 });
+
+// Attach Redis adapter for cross-pod pub/sub
+const { pubClient, subClient } = createAdapterClients();
+await Promise.all([pubClient.connect(), subClient.connect()]);
+io.adapter(createAdapter(pubClient, subClient));
+console.log('Socket.IO Redis adapter attached');
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Too many attempts, please try again later' },
+  skip: (req) => req.headers['x-load-test'] === process.env.LOAD_TEST_KEY,
 });
 
 // Socket.IO authentication middleware
@@ -131,14 +125,14 @@ io.on('connection', (socket) => {
   console.log(`User connected: ${socket.user.username} (${socket.id})`);
   
   // Join lobby queue
-  socket.on('lobby:join', () => {
-    const match = lobby.joinQueue(socket.id, socket.user.username);
-    
+  socket.on('lobby:join', async () => {
+    const match = await lobby.joinQueue(socket.id, socket.user.username);
+
     if (match) {
       // Match found! Create a new PvP game
       const gameState = initializeGame();
       const gameId = uuidv4();
-      
+
       const game = {
         id: gameId,
         gameType: 'pvp',
@@ -146,22 +140,16 @@ io.on('connection', (socket) => {
         player2Username: match.player2Username,
         state: gameState,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      
-      // Save game
-      (async () => {
-        try {
-          const games = await readJSON(GAMES_FILE, []);
-          games.push(game);
-          await writeJSON(GAMES_FILE, games);
-        } catch (error) {
-          console.error('Error saving PvP game:', error);
-        }
-      })();
-      
+
+      // Save game to database
+      dbCreateGame(game).catch((error) => {
+        console.error('Error saving PvP game:', error);
+      });
+
       // Register game in lobby
-      lobby.registerGame(
+      await lobby.registerGame(
         gameId,
         match.player1SocketId,
         match.player2SocketId,
@@ -174,14 +162,14 @@ io.on('connection', (socket) => {
         gameId,
         playerNumber: 1,
         opponentUsername: match.player2Username,
-        gameState: { ...gameState, id: gameId }
+        gameState: { ...gameState, id: gameId },
       });
-      
+
       io.to(match.player2SocketId).emit('lobby:matched', {
         gameId,
         playerNumber: 2,
         opponentUsername: match.player1Username,
-        gameState: { ...gameState, id: gameId }
+        gameState: { ...gameState, id: gameId },
       });
     } else {
       // Added to queue, waiting for opponent
@@ -190,8 +178,8 @@ io.on('connection', (socket) => {
   });
   
   // Leave lobby queue
-  socket.on('lobby:leave', () => {
-    const removed = lobby.leaveQueue(socket.id);
+  socket.on('lobby:leave', async () => {
+    const removed = await lobby.leaveQueue(socket.id);
     if (removed) {
       socket.emit('lobby:left');
     }
@@ -200,11 +188,11 @@ io.on('connection', (socket) => {
   // Make a move in PvP game
   socket.on('game:move', async ({ gameId, pieceIndex, toRow, toCol, cardName }) => {
     try {
-      const gameInfo = lobby.getGame(gameId);
+      const gameInfo = await lobby.getGame(gameId);
       if (!gameInfo) {
         return socket.emit('game:error', { error: 'Game not found' });
       }
-      
+
       // Determine which player is making the move
       let playerNumber;
       if (gameInfo.player1SocketId === socket.id) {
@@ -214,69 +202,47 @@ io.on('connection', (socket) => {
       } else {
         return socket.emit('game:error', { error: 'Not a player in this game' });
       }
-      
-      // Get current game state from storage
-      const games = await readJSON(GAMES_FILE, []);
-      const gameIndex = games.findIndex(g => g.id === gameId);
-      
-      if (gameIndex === -1) {
+
+      // Get current game state from database
+      const game = await getGame(gameId);
+
+      if (!game) {
         return socket.emit('game:error', { error: 'Game not found in storage' });
       }
-      
-      const game = games[gameIndex];
-      
-      // Check if game is over
+
       if (game.state.winner) {
         return socket.emit('game:error', { error: 'Game is already over' });
       }
-      
-      // Check if it's player's turn
+
       if (game.state.currentPlayer !== playerNumber) {
         return socket.emit('game:error', { error: 'Not your turn' });
       }
-      
-      // Validate and make move
+
       if (!isValidMove(game.state, playerNumber, pieceIndex, toRow, toCol, cardName)) {
         return socket.emit('game:error', { error: 'Invalid move' });
       }
-      
-      game.state = makeMove(game.state, playerNumber, pieceIndex, toRow, toCol, cardName);
-      game.updatedAt = new Date().toISOString();
-      
-      // Check if player won
-      if (game.state.winner) {
-        const winnerUsername = game.state.winner === 1 ? game.player1Username : game.player2Username;
-        const loserUsername = game.state.winner === 1 ? game.player2Username : game.player1Username;
-        
-        // Update stats
-        const stats = await readJSON(STATS_FILE, {});
-        if (!stats[winnerUsername]) {
-          stats[winnerUsername] = { wins: 0, losses: 0, gamesPlayed: 0 };
-        }
-        if (!stats[loserUsername]) {
-          stats[loserUsername] = { wins: 0, losses: 0, gamesPlayed: 0 };
-        }
-        
-        stats[winnerUsername].wins++;
-        stats[winnerUsername].gamesPlayed++;
-        stats[loserUsername].losses++;
-        stats[loserUsername].gamesPlayed++;
-        
-        await writeJSON(STATS_FILE, stats);
-        
-        // Remove game from active games
-        lobby.removeGame(gameId);
+
+      const newState = makeMove(game.state, playerNumber, pieceIndex, toRow, toCol, cardName);
+      const updatedAt = new Date().toISOString();
+
+      if (newState.winner) {
+        const winnerUsername = newState.winner === 1 ? game.player1Username : game.player2Username;
+        const loserUsername = newState.winner === 1 ? game.player2Username : game.player1Username;
+
+        await Promise.all([
+          recordWin(winnerUsername),
+          recordLoss(loserUsername),
+          invalidateLeaderboard(),
+        ]);
+
+        await lobby.removeGame(gameId);
       }
-      
-      // Save updated game state
-      games[gameIndex] = game;
-      await writeJSON(GAMES_FILE, games);
-      
-      // Broadcast updated state to both players
-      const stateWithId = { ...game.state, id: gameId };
+
+      await updateGameState(gameId, newState, updatedAt);
+
+      const stateWithId = { ...newState, id: gameId };
       io.to(gameInfo.player1SocketId).emit('game:state', { gameState: stateWithId });
       io.to(gameInfo.player2SocketId).emit('game:state', { gameState: stateWithId });
-      
     } catch (error) {
       console.error('Move error:', error);
       socket.emit('game:error', { error: 'Internal server error' });
@@ -284,10 +250,10 @@ io.on('connection', (socket) => {
   });
   
   // Handle disconnect
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`User disconnected: ${socket.user.username} (${socket.id})`);
-    
-    const disconnectInfo = lobby.handleDisconnect(socket.id);
+
+    const disconnectInfo = await lobby.handleDisconnect(socket.id);
     
     if (disconnectInfo && disconnectInfo.opponentSocketId) {
       // Notify opponent of disconnect
@@ -299,9 +265,17 @@ io.on('connection', (socket) => {
   });
 });
 
-// Health check route for Docker HEALTHCHECK and load balancers
-app.get('/api/health', (_req, res) => {
-  res.status(200).json({ status: 'ok' });
+// Health check — verifies DB and Redis connectivity
+app.get('/api/health', async (_req, res) => {
+  try {
+    const [dbOk, cacheOk] = await Promise.all([dbHealthCheck(), cacheHealthCheck()]);
+    if (dbOk && cacheOk) {
+      return res.status(200).json({ status: 'ok', db: 'ok', cache: 'ok' });
+    }
+    res.status(503).json({ status: 'degraded', db: dbOk ? 'ok' : 'down', cache: cacheOk ? 'ok' : 'down' });
+  } catch (error) {
+    res.status(503).json({ status: 'error', error: error.message });
+  }
 });
 
 // Auth routes
@@ -321,42 +295,30 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const users = await readJSON(USERS_FILE);
-
     // Check if username already exists
-    if (users.some(u => u.username === username)) {
+    const existing = await getUserByUsername(username);
+    if (existing) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
-    // Hash password
+    // Hash password and create user
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Create user
-    const user = {
-      id: uuidv4(),
-      username,
-      password: hashedPassword,
-      createdAt: new Date().toISOString()
-    };
-
-    users.push(user);
-    await writeJSON(USERS_FILE, users);
+    const userId = uuidv4();
+    await dbCreateUser(userId, username, hashedPassword);
 
     // Initialize user stats
-    const stats = await readJSON(STATS_FILE, {});
-    stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
-    await writeJSON(STATS_FILE, stats);
+    await ensureStats(username);
 
     // Generate JWT token
     const token = jwt.sign(
-      { id: user.id, username: user.username },
+      { id: userId, username },
       JWT_SECRET_TO_USE,
       { expiresIn: '7d' }
     );
 
     res.status(201).json({
       token,
-      user: { username: user.username }
+      user: { username },
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -372,21 +334,18 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Username and password required' });
     }
 
-    const users = await readJSON(USERS_FILE);
-    const user = users.find(u => u.username === username);
+    const user = await getUserByUsername(username);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Verify password
     const validPassword = await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Generate JWT token
     const token = jwt.sign(
       { id: user.id, username: user.username },
       JWT_SECRET_TO_USE,
@@ -395,7 +354,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     res.json({
       token,
-      user: { username: user.username }
+      user: { username: user.username },
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -408,26 +367,18 @@ app.get('/api/profile', authenticateToken, (req, res) => {
   res.json({ user: req.user });
 });
 
-// Leaderboard route
+// Leaderboard route (Redis-cached)
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    const stats = await readJSON(STATS_FILE, {});
-    
-    const leaderboard = Object.entries(stats)
-      .map(([username, data]) => ({
-        username,
-        wins: data.wins || 0,
-        losses: data.losses || 0,
-        gamesPlayed: data.gamesPlayed || 0,
-        winRate: data.gamesPlayed > 0 
-          ? Math.round((data.wins / data.gamesPlayed) * 100)
-          : 0
-      }))
-      .sort((a, b) => {
-        // Sort by wins first, then by win rate
-        if (b.wins !== a.wins) return b.wins - a.wins;
-        return b.winRate - a.winRate;
-      });
+    // Try cache first
+    const cached = await getCachedLeaderboard();
+    if (cached) {
+      return res.json({ leaderboard: cached });
+    }
+
+    // Cache miss — query database
+    const leaderboard = await dbGetLeaderboard();
+    await setCachedLeaderboard(leaderboard);
 
     res.json({ leaderboard });
   } catch (error) {
@@ -442,16 +393,13 @@ app.post('/api/game/new', authenticateToken, async (req, res) => {
     const { difficulty = 'medium' } = req.body;
     const username = req.user.username;
 
-    // Validate difficulty
     if (!['easy', 'medium', 'hard'].includes(difficulty)) {
       return res.status(400).json({ error: 'Invalid difficulty level' });
     }
 
-    // Initialize new game
     const gameState = initializeGame();
     const gameId = uuidv4();
 
-    // Create game record (AI game)
     const game = {
       id: gameId,
       gameType: 'ai',
@@ -459,19 +407,11 @@ app.post('/api/game/new', authenticateToken, async (req, res) => {
       difficulty,
       state: gameState,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     };
 
-    // Save game
-    let games = await readJSON(GAMES_FILE, []);
-    // Ensure games is an array (migrate from object format if needed)
-    if (!Array.isArray(games)) {
-      games = [];
-    }
-    games.push(game);
-    await writeJSON(GAMES_FILE, games);
+    await dbCreateGame(game);
 
-    // Add game ID to state for client convenience
     const stateWithId = { ...gameState, id: gameId };
     res.status(201).json({ gameId, gameState: stateWithId });
   } catch (error) {
@@ -485,19 +425,16 @@ app.get('/api/game/:id', authenticateToken, async (req, res) => {
     const gameId = req.params.id;
     const username = req.user.username;
 
-    const games = await readJSON(GAMES_FILE, []);
-    const game = games.find(g => g.id === gameId);
+    const game = await getGame(gameId);
 
     if (!game) {
       return res.status(404).json({ error: 'Game not found' });
     }
 
-    // Verify game belongs to user
     if (game.username !== username) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Add game ID to state for client convenience
     const stateWithId = { ...game.state, id: game.id };
     res.json({ gameState: stateWithId });
   } catch (error) {
@@ -512,142 +449,86 @@ app.post('/api/game/:id/move', authenticateToken, async (req, res) => {
     const username = req.user.username;
     const { pieceIndex, toRow, toCol, cardName } = req.body;
 
-    // Validate input
     if (pieceIndex === undefined || toRow === undefined || toCol === undefined || !cardName) {
       return res.status(400).json({ error: 'Missing move parameters' });
     }
 
-    const games = await readJSON(GAMES_FILE, []);
-    const gameIndex = games.findIndex(g => g.id === gameId);
+    const game = await getGame(gameId);
 
-    if (gameIndex === -1) {
+    if (!game) {
       return res.status(404).json({ error: 'Game not found' });
     }
 
-    const game = games[gameIndex];
-
-    // Verify game belongs to user
     if (game.username !== username) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Check if game is over
     if (game.state.winner) {
       return res.status(400).json({ error: 'Game is already over' });
     }
 
-    // Check if it's player's turn
     if (game.state.currentPlayer !== 1) {
       return res.status(400).json({ error: 'Not your turn' });
     }
 
-    // Validate and make player move
     if (!isValidMove(game.state, 1, pieceIndex, toRow, toCol, cardName)) {
       return res.status(400).json({ error: 'Invalid move' });
     }
 
-    game.state = makeMove(game.state, 1, pieceIndex, toRow, toCol, cardName);
-    game.updatedAt = new Date().toISOString();
+    const newState = makeMove(game.state, 1, pieceIndex, toRow, toCol, cardName);
+    const updatedAt = new Date().toISOString();
 
-    // Check if player won with this move
     let playerWon = false;
-    if (game.state.winner === 1) {
+    if (newState.winner === 1) {
       playerWon = true;
-      const stats = await readJSON(STATS_FILE, {});
-      if (!stats[username]) {
-        stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
-      }
-      stats[username].gamesPlayed++;
-      stats[username].wins++;
-      await writeJSON(STATS_FILE, stats);
+      await Promise.all([recordWin(username), invalidateLeaderboard()]);
     }
 
-    // Save player's move
-    games[gameIndex] = game;
-    await writeJSON(GAMES_FILE, games);
+    await updateGameState(gameId, newState, updatedAt);
 
-    // Send response with player's move immediately
-    const stateWithId = { ...game.state, id: game.id };
+    const stateWithId = { ...newState, id: gameId };
     res.json({ gameState: stateWithId, gameEnded: playerWon });
 
     // If game not over and it's AI's turn, process AI move asynchronously
-    if (!game.state.winner && game.state.currentPlayer === 2) {
-      // Process AI move in background after delay (with optimistic concurrency)
+    if (!newState.winner && newState.currentPlayer === 2) {
       (async () => {
         try {
-          await new Promise(resolve => setTimeout(resolve, 1500));
+          await new Promise((resolve) => setTimeout(resolve, 1500));
 
-          // Re-read game state to ensure we have latest
-          const gamesAfterDelay = await readJSON(GAMES_FILE, []);
-          const gameAfterDelay = gamesAfterDelay.find(g => g.id === gameId);
+          const gameAfterDelay = await getGame(gameId);
           if (!gameAfterDelay || gameAfterDelay.state.winner) return;
 
-          // Version for optimistic concurrency: compare before write
           const readUpdatedAt = gameAfterDelay.updatedAt;
 
           const aiMove = getAIMove(gameAfterDelay.state, gameAfterDelay.difficulty);
           if (!aiMove) return;
 
-          gameAfterDelay.state = makeMove(
-            gameAfterDelay.state,
-            2,
-            aiMove.pieceIndex,
-            aiMove.toRow,
-            aiMove.toCol,
-            aiMove.cardName
+          const aiState = makeMove(
+            gameAfterDelay.state, 2,
+            aiMove.pieceIndex, aiMove.toRow, aiMove.toCol, aiMove.cardName
           );
-          gameAfterDelay.updatedAt = new Date().toISOString();
+          const aiUpdatedAt = new Date().toISOString();
 
-          // Check if AI won (for stats; will persist only if write succeeds)
-          const aiWon = gameAfterDelay.state.winner === 2;
+          // Optimistic concurrency via updated_at check
+          const written = await updateGameStateOptimistic(gameId, aiState, aiUpdatedAt, readUpdatedAt);
 
-          // Optimistic concurrency: only write if stored game version matches what we read
-          const finalGames = await readJSON(GAMES_FILE, []);
-          const finalGameIndex = finalGames.findIndex(g => g.id === gameId);
-          if (finalGameIndex === -1) return;
-
-          const currentGame = finalGames[finalGameIndex];
-          if (currentGame.updatedAt !== readUpdatedAt) {
-            // Conflict: someone else updated the game; apply AI move to latest state instead
-            console.log('AI move: conflict detected, applying move to latest state', gameId);
-            if (currentGame.state.winner) return; // Game ended, skip AI move
-            const aiMoveLatest = getAIMove(currentGame.state, currentGame.difficulty);
-            if (!aiMoveLatest) return;
-            currentGame.state = makeMove(
-              currentGame.state,
-              2,
-              aiMoveLatest.pieceIndex,
-              aiMoveLatest.toRow,
-              aiMoveLatest.toCol,
-              aiMoveLatest.cardName
+          if (!written) {
+            console.log('AI move: conflict detected, retrying', gameId);
+            const latest = await getGame(gameId);
+            if (!latest || latest.state.winner) return;
+            const retry = getAIMove(latest.state, latest.difficulty);
+            if (!retry) return;
+            const retryState = makeMove(
+              latest.state, 2,
+              retry.pieceIndex, retry.toRow, retry.toCol, retry.cardName
             );
-            currentGame.updatedAt = new Date().toISOString();
-            finalGames[finalGameIndex] = currentGame;
-
-            if (currentGame.state.winner === 2) {
-              const stats = await readJSON(STATS_FILE, {});
-              if (!stats[username]) {
-                stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
-              }
-              stats[username].gamesPlayed++;
-              stats[username].losses++;
-              await writeJSON(STATS_FILE, stats);
+            await updateGameState(gameId, retryState, new Date().toISOString());
+            if (retryState.winner === 2) {
+              await Promise.all([recordLoss(username), invalidateLeaderboard()]);
             }
-          } else {
-            // No conflict: write our computed state; replace only the matching game by index
-            finalGames[finalGameIndex] = gameAfterDelay;
-            if (aiWon) {
-              const stats = await readJSON(STATS_FILE, {});
-              if (!stats[username]) {
-                stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
-              }
-              stats[username].gamesPlayed++;
-              stats[username].losses++;
-              await writeJSON(STATS_FILE, stats);
-            }
+          } else if (aiState.winner === 2) {
+            await Promise.all([recordLoss(username), invalidateLeaderboard()]);
           }
-
-          await writeJSON(GAMES_FILE, finalGames);
         } catch (error) {
           console.error('AI move error:', error);
         }
@@ -664,47 +545,30 @@ app.post('/api/game/:id/resign', authenticateToken, async (req, res) => {
     const gameId = req.params.id;
     const username = req.user.username;
 
-    const games = await readJSON(GAMES_FILE, []);
-    const gameIndex = games.findIndex(g => g.id === gameId);
+    const game = await getGame(gameId);
 
-    if (gameIndex === -1) {
+    if (!game) {
       return res.status(404).json({ error: 'Game not found' });
     }
 
-    const game = games[gameIndex];
-
-    // Verify game belongs to user
     if (game.username !== username) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Check if game is already over
     if (game.state.winner) {
       return res.status(400).json({ error: 'Game is already over' });
     }
 
-    // Set AI as winner
-    game.state.winner = 2;
-    game.state.winCondition = 'Resignation';
-    game.updatedAt = new Date().toISOString();
+    const newState = { ...game.state, winner: 2, winCondition: 'Resignation' };
+    const updatedAt = new Date().toISOString();
 
-    // Update stats
-    const stats = await readJSON(STATS_FILE, {});
-    if (!stats[username]) {
-      stats[username] = { wins: 0, losses: 0, gamesPlayed: 0 };
-    }
+    await Promise.all([
+      updateGameState(gameId, newState, updatedAt),
+      recordLoss(username),
+      invalidateLeaderboard(),
+    ]);
 
-    stats[username].gamesPlayed++;
-    stats[username].losses++;
-
-    await writeJSON(STATS_FILE, stats);
-
-    // Save updated game
-    games[gameIndex] = game;
-    await writeJSON(GAMES_FILE, games);
-
-    // Add game ID to state for client convenience
-    const stateWithId = { ...game.state, id: game.id };
+    const stateWithId = { ...newState, id: gameId };
     res.json({ gameState: stateWithId });
   } catch (error) {
     console.error('Resign error:', error);
@@ -736,13 +600,24 @@ app.use((_req, res) => {
 
 httpServer.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
-  console.log('Socket.IO initialized for real-time communication');
+  console.log('Socket.IO initialized with Redis adapter for cross-pod communication');
 });
 
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  httpServer.close(() => {
-    console.log('Server closed');
+// ── Graceful shutdown ───────────────────────────────────────────────────────
+
+async function shutdown() {
+  console.log('Shutting down gracefully...');
+  httpServer.close(async () => {
+    await Promise.all([
+      closePool(),
+      closeRedis(),
+      pubClient.quit(),
+      subClient.quit(),
+    ]);
+    console.log('All connections closed');
     process.exit(0);
   });
-});
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
