@@ -1,11 +1,14 @@
 // Redis-backed Lobby and Matchmaking System
 // All state stored in Redis so matchmaking works across multiple pods.
+// Game session keys use TTL so abandoned sessions are evicted (saves memory).
 
 import redis from './cache.js';
 
 const QUEUE_KEY = 'lobby:queue';             // Redis List: waiting players
-const GAMES_KEY = 'lobby:games';             // Redis Hash: gameId -> JSON game info
 const SOCKET_USER_KEY = 'lobby:socket2user'; // Redis Hash: socketId -> username
+const GAME_KEY_PREFIX = 'lobby:game:';       // gameId -> JSON game info (per-key TTL)
+const SOCKET_TO_GAME_PREFIX = 'lobby:socket:'; // socketId -> gameId (for disconnect lookup)
+const GAME_SESSION_TTL_SEC = 6 * 3600;      // 6 hours: clean up abandoned game session state
 
 /**
  * Add a player to the matchmaking queue.
@@ -69,7 +72,7 @@ async function leaveQueue(socketId) {
 }
 
 /**
- * Register an active game.
+ * Register an active game. Keys have TTL so abandoned sessions are evicted.
  */
 async function registerGame(gameId, player1SocketId, player2SocketId, player1Username, player2Username) {
   const gameInfo = JSON.stringify({
@@ -78,7 +81,10 @@ async function registerGame(gameId, player1SocketId, player2SocketId, player1Use
     player1Username,
     player2Username,
   });
-  await redis.hset(GAMES_KEY, gameId, gameInfo);
+  const gameKey = GAME_KEY_PREFIX + gameId;
+  await redis.set(gameKey, gameInfo, 'EX', GAME_SESSION_TTL_SEC);
+  await redis.set(SOCKET_TO_GAME_PREFIX + player1SocketId, gameId, 'EX', GAME_SESSION_TTL_SEC);
+  await redis.set(SOCKET_TO_GAME_PREFIX + player2SocketId, gameId, 'EX', GAME_SESSION_TTL_SEC);
 }
 
 /**
@@ -86,15 +92,21 @@ async function registerGame(gameId, player1SocketId, player2SocketId, player1Use
  * @returns {Object|null}
  */
 async function getGame(gameId) {
-  const data = await redis.hget(GAMES_KEY, gameId);
+  const data = await redis.get(GAME_KEY_PREFIX + gameId);
   return data ? JSON.parse(data) : null;
 }
 
 /**
- * Remove a game from active games.
+ * Remove a game from active games (and socket->gameId index).
  */
 async function removeGame(gameId) {
-  await redis.hdel(GAMES_KEY, gameId);
+  const game = await getGame(gameId);
+  const gameKey = GAME_KEY_PREFIX + gameId;
+  await redis.del(gameKey);
+  if (game) {
+    await redis.del(SOCKET_TO_GAME_PREFIX + game.player1SocketId);
+    await redis.del(SOCKET_TO_GAME_PREFIX + game.player2SocketId);
+  }
 }
 
 /**
@@ -105,19 +117,16 @@ async function handleDisconnect(socketId) {
   await leaveQueue(socketId);
 
   const username = await redis.hget(SOCKET_USER_KEY, socketId);
+  const gameId = await redis.get(SOCKET_TO_GAME_PREFIX + socketId);
 
-  // Check if player was in an active game
-  const allGames = await redis.hgetall(GAMES_KEY);
-  for (const [gameId, data] of Object.entries(allGames)) {
-    const game = JSON.parse(data);
-    if (game.player1SocketId === socketId || game.player2SocketId === socketId) {
+  if (gameId) {
+    const game = await getGame(gameId);
+    if (game) {
       const opponentSocketId = game.player1SocketId === socketId
         ? game.player2SocketId
         : game.player1SocketId;
-
-      await redis.hdel(GAMES_KEY, gameId);
+      await removeGame(gameId);
       await redis.hdel(SOCKET_USER_KEY, socketId);
-
       return {
         gameId,
         opponentSocketId,

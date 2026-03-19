@@ -32,9 +32,12 @@ redis.on('connect', () => {
 });
 
 // ── Cache keys & TTLs ──────────────────────────────────────────────────────
+// Leaderboard: short TTL for freshness; under memory pressure Redis eviction
+// (e.g. volatile-ttl) will prefer evicting keys with TTL. For other caches, a
+// max TTL (e.g. 1 year) can be set so long-lived keys are still evictable.
 
 const LEADERBOARD_KEY = 'cache:leaderboard';
-const LEADERBOARD_TTL = 30; // seconds
+const LEADERBOARD_TTL = 30; // seconds (balance freshness vs DB load)
 
 // ── Leaderboard cache ───────────────────────────────────────────────────────
 

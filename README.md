@@ -219,6 +219,17 @@ Redis is used for:
 **DOKS deployment**: Data persists in a PersistentVolumeClaim (DigitalOcean Block Storage).
 **Production**: Use DigitalOcean Managed Database for automated backups and failover.
 
+### Production checklist
+
+Before treating this stack as production-ready, address the following (see [Architecture](docs/architecture.md) and [QBR Summary](docs/qbr-summary.md) for details):
+
+| Item | Demo behavior | Production recommendation |
+|------|----------------|---------------------------|
+| **HTTPS** | Load Balancer and app serve HTTP only | Terminate TLS at the DigitalOcean Load Balancer (managed or uploaded certificate). |
+| **VPC** | Managed DB and cache use public endpoints | Use VPC and private endpoints so DB/cache traffic does not cross the public internet; restrict DB firewall to app egress. |
+| **HA** | Managed PostgreSQL and Valkey are single-node | Enable HA/failover for managed databases when budget allows. |
+| **TTL / eviction** | Game session keys: 6h TTL; leaderboard cache: 30s TTL | Set Redis/Valkey eviction policy (e.g. `volatile-ttl` or `allkeys-lru`) when memory is constrained; tune TTLs as needed. |
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — System design, component details, scaling behavior, and Mermaid diagram
