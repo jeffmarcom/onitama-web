@@ -66,12 +66,13 @@ make dev
 - `make logs` - View container logs
 - `make clean` - Stop and remove containers/images
 - `make deploy` - Deploy to GCP Cloud Run
-- `make doks-setup` - Create DOKS cluster and container registry
+- `make doks-setup ENV=dev` / `ENV=prod` - Create DOKS cluster (and managed DB/cache for prod)
 - `make doks-push` - Build and push images to DO registry
-- `make doks-deploy` - Deploy to DOKS via Helm
+- `make doks-deploy ENV=dev` / `ENV=prod` - Deploy to DOKS via Helm
 - `make doks-status` - Show cluster status
 - `make doks-loadtest` - Enable the load generator
-- `make doks-teardown` - Delete all cloud resources
+- `make doks-reset` - Disable load generator
+- `make doks-teardown ENV=dev` / `ENV=prod` - Delete cloud resources
 
 ## Development
 
@@ -161,39 +162,31 @@ For a detailed tutorial, visit the "How to Play" page in the app.
 
 ### Deploy to DigitalOcean Kubernetes (DOKS)
 
-The recommended deployment path uses a Helm chart on DOKS. See [docs/setup-guide.md](docs/setup-guide.md) for full step-by-step instructions.
+The recommended deployment path uses a Helm chart on DOKS.
 
-**Quick start:**
+**Dev** (in-cluster Postgres and Redis):
 
 ```bash
 # Prerequisites: doctl, kubectl, helm, docker
 doctl auth init
-make doks-setup    # Create cluster (~5 min)
-make doks-push     # Build and push images
-make doks-deploy   # Deploy via Helm
-make doks-status   # Check pods, services, HPA
+make doks-setup ENV=dev
+make doks-push
+make doks-deploy ENV=dev
+make doks-status
 ```
 
-The Helm chart deploys:
-- Stateless app pods with HPA (auto-scales 2–8 based on CPU)
-- In-cluster PostgreSQL with persistent storage
-- In-cluster Redis for caching and WebSocket pub/sub
-- DigitalOcean Load Balancer
-
-For production, switch to DigitalOcean Managed Database and Managed Redis:
+**Prod** (managed PostgreSQL and Valkey):
 
 ```bash
-helm upgrade onitama ./chart/onitama \
-  -f chart/onitama/values-production.yaml \
-  --set secrets.databaseUrl="<MANAGED_DB_URL>" \
-  --set secrets.redisUrl="<MANAGED_REDIS_URL>"
+make doks-setup ENV=prod
+make doks-push
+make doks-deploy ENV=prod
+make doks-status
 ```
 
-**Teardown** (stops all billing):
+The Helm chart deploys stateless app pods with HPA, a Load Balancer, and either in-cluster or managed database and cache depending on `ENV`.
 
-```bash
-make doks-teardown
-```
+**Teardown** (stops billing): `make doks-teardown ENV=dev` or `make doks-teardown ENV=prod`.
 
 ### Deploy to Google Cloud Run
 
@@ -216,35 +209,7 @@ Redis is used for:
 - Leaderboard caching (2 min TTL, invalidated on win/loss)
 - Socket.IO cross-pod pub/sub (enables horizontal scaling of WebSocket connections)
 
-**DOKS deployment**: Data persists in a PersistentVolumeClaim (DigitalOcean Block Storage).
-**Production**: Use DigitalOcean Managed Database for automated backups and failover.
-
-### Production checklist
-
-Before treating this stack as production-ready, address the following (see [Architecture](docs/architecture.md) and [QBR Summary](docs/qbr-summary.md) for details):
-
-| Item | Demo behavior | Production recommendation |
-|------|----------------|---------------------------|
-| **HTTPS** | Load Balancer and app serve HTTP only | Terminate TLS at the DigitalOcean Load Balancer (managed or uploaded certificate). |
-| **VPC** | Managed DB and cache use public endpoints | Use VPC and private endpoints so DB/cache traffic does not cross the public internet; restrict DB firewall to app egress. |
-| **HA** | Managed PostgreSQL and Valkey are single-node | Enable HA/failover for managed databases when budget allows. |
-| **TTL / eviction** | Game session keys: 6h TTL; leaderboard cache: 2 min TTL | Set Redis/Valkey eviction policy (e.g. `volatile-ttl` or `allkeys-lru`) when memory is constrained; tune TTLs as needed. |
-
-## Documentation
-
-- [Architecture](docs/architecture.md) — System design, component details, scaling behavior, and Mermaid diagram
-- [Setup Guide](docs/setup-guide.md) — Step-by-step deployment instructions for DOKS
-- [Infrastructure Review](docs/qbr-summary.md) — Cost analysis, scaling recommendations, and risk assessment
-
-## Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+**DOKS deployment**: With `ENV=dev`, data uses in-cluster Postgres/Redis and PersistentVolumeClaim. With `ENV=prod`, managed PostgreSQL and Valkey are used.
 
 ## License
 
