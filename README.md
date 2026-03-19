@@ -213,7 +213,7 @@ The application uses PostgreSQL for persistent storage:
 - `stats` table — Player win/loss statistics
 
 Redis is used for:
-- Leaderboard caching (30s TTL)
+- Leaderboard caching (2 min TTL, invalidated on win/loss)
 - Socket.IO cross-pod pub/sub (enables horizontal scaling of WebSocket connections)
 
 **DOKS deployment**: Data persists in a PersistentVolumeClaim (DigitalOcean Block Storage).
@@ -228,7 +228,7 @@ Before treating this stack as production-ready, address the following (see [Arch
 | **HTTPS** | Load Balancer and app serve HTTP only | Terminate TLS at the DigitalOcean Load Balancer (managed or uploaded certificate). |
 | **VPC** | Managed DB and cache use public endpoints | Use VPC and private endpoints so DB/cache traffic does not cross the public internet; restrict DB firewall to app egress. |
 | **HA** | Managed PostgreSQL and Valkey are single-node | Enable HA/failover for managed databases when budget allows. |
-| **TTL / eviction** | Game session keys: 6h TTL; leaderboard cache: 30s TTL | Set Redis/Valkey eviction policy (e.g. `volatile-ttl` or `allkeys-lru`) when memory is constrained; tune TTLs as needed. |
+| **TTL / eviction** | Game session keys: 6h TTL; leaderboard cache: 2 min TTL | Set Redis/Valkey eviction policy (e.g. `volatile-ttl` or `allkeys-lru`) when memory is constrained; tune TTLs as needed. |
 
 ## Documentation
 

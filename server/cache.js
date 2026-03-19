@@ -32,12 +32,12 @@ redis.on('connect', () => {
 });
 
 // ── Cache keys & TTLs ──────────────────────────────────────────────────────
-// Leaderboard: short TTL for freshness; under memory pressure Redis eviction
-// (e.g. volatile-ttl) will prefer evicting keys with TTL. For other caches, a
-// max TTL (e.g. 1 year) can be set so long-lived keys are still evictable.
+// Leaderboard: we invalidate on every win/loss so cache refreshes when games end.
+// TTL is a fallback so we don't serve very stale data if invalidation is missed;
+// 2 min gives good cache hit rate between games while staying reasonably fresh.
 
 const LEADERBOARD_KEY = 'cache:leaderboard';
-const LEADERBOARD_TTL = 30; // seconds (balance freshness vs DB load)
+const LEADERBOARD_TTL = 120; // seconds (2 min fallback; invalidation on write keeps it fresh)
 
 // ── Leaderboard cache ───────────────────────────────────────────────────────
 
